@@ -26,32 +26,42 @@ typedef double Float;
 
 namespace math_constexpr {
 
-constexpr unsigned floorlog2(unsigned x)
-{
-    return x == 1 ? 0 : 1+floorlog2(x >> 1);
+// borrowed from the answer in https://stackoverflow.com/questions/23781506/compile-time-computing-of-number-of-bits-needed-to-encode-n-different-states/23795363
+constexpr unsigned floorlog2(unsigned x) {
+  return x == 1 ? 0 : 1+floorlog2(x >> 1);
 }
 
-constexpr unsigned ceillog2(unsigned x)
-{
-    return x == 1 ? 0 : floorlog2(x - 1) + 1;
+constexpr unsigned ceillog2(unsigned x) {
+  return x == 1 ? 0 : floorlog2(x - 1) + 1;
 }
-
 
 }; // math_constexpr
 
 //
 // params
 //
-const unsigned N = 1000000;
-const unsigned Ncreate = N/3; // (DEBUG) should be =N, but allows to override the number of particles for debugging
-const unsigned Pairwise_RandomizeRounds = 1500*N;
-const unsigned SZ = 1.;    // size of the box, when the particles are outside this box they reflect to the other side
-const Float initE1 = 1.9;
-const Float initE2 = 2.1;
-const std::array<Float,2> energyLimits = {{initE1/2, 1.5*initE2}}; // consider energies up to (..energyUpTo)
-const unsigned EnergyBuckets = 200; // how many buckets we build
-const Float m = 1.; // nominal mass, it shouldn't matter here
-const Float InteractionPct = 0.001; // how much energy is transferred
+static constexpr unsigned N = 3; //1000000;
+static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
+static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
+static constexpr unsigned SZ = 1.;    // size of the box, when the particles are outside this box they reflect to the other side
+static constexpr Float dt = 0.001; //0.00001;
+static constexpr Float initE1 = 1.9;
+static constexpr Float initE2 = 2.1;
+static constexpr std::array<Float,2> energyLimits = {{initE1/2, 1.5*initE2}}; // consider energies up to (..energyUpTo)
+static constexpr unsigned EnergyBuckets = 200; // how many buckets we build
+static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
+static constexpr Float InteractionPct = 0.001; // how much energy is transferred
+static constexpr Float particleRadius = 0.25; //0.002; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
+static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
+
+static constexpr std::array<Float,2> imageAreaX = {{0,1}}; //{{0.45,0.55}};
+static constexpr std::array<Float,2> imageAreaY = {{0,1}}; //{{0.45,0.55}};
+static constexpr std::array<Float,2> imageAreaZ = {{0,1}}; //{{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
+
+//
+// Stats of the run
+//
+unsigned numCollisions = 0;
 
 //
 // Classes
@@ -68,6 +78,7 @@ public: // data
   bool track;
 #endif
 public: // methods
+  Particle() { }
   Particle(const Vec3 &newPos, const Vec3 &newV)
     : pos(newPos), v(newV)
 #if DBG_TRACK_PARTICLE
@@ -75,6 +86,7 @@ public: // methods
 #endif
   {
   }
+  ~Particle() { }
   Float energy() const {
     return m*(v*v)/2;
   }
@@ -162,8 +174,6 @@ private:
 }; // ParticlesIndex
 
 ParticlesIndex particlesIndex;
-static constexpr Float particleRadius = 0.002; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
-static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 
 // Separate methods
 
@@ -192,7 +202,7 @@ public:
 // Data
 //
 
-static std::vector<Particle> particles;
+std::array<Particle, Ncreate> particles;
 
 //
 // Random value generator
@@ -248,14 +258,30 @@ public:
 
 static Random rg;
 
-static Particle genParticleEnergyRange() {
-  auto [sphX,sphY,sphZ] = rg.genSphereCoords();
-  auto E = rg.genEnergy();
-  auto V = Particle::energyToVelocity(E);
-  return Particle(Vec3(rg.genCoord(), rg.genCoord(), rg.genCoord()), Vec3(sphX*V, sphY*V, sphZ*V));
+static void generateParticles() {
+  auto genParticleEnergyRange = []() {
+    auto [sphX,sphY,sphZ] = rg.genSphereCoords();
+    auto E = rg.genEnergy();
+    auto V = Particle::energyToVelocity(E);
+    return Particle(Vec3(rg.genCoord(), rg.genCoord(), rg.genCoord()), Vec3(sphX*V, sphY*V, sphZ*V));
+  };
+  for (int i = 0; i < Ncreate; i++)
+    particles[i] = genParticleEnergyRange();
+#if DBG_TRACK_PARTICLE
+  {
+    //Float v = 0.001/*per-frame evolution percentage*/*0.08/*imageAreaX span*/ / 0.00001/*dt*/;
+    //particles[0] = Particle(Vec3(0.5,0.5,0.5), Vec3(v,v,0));
+    //particles[0].track = true;
+    //particles[1] = Particle(Vec3(0.5+0.053+particleRadius,0.5+0.053,0.5), Vec3(-v,-v,0));
+    //particles[2] = Particle(Vec3(-0.05+0.5,-0.05+0.5,0.5), Vec3(2*v,2*v,0));
+  }
+#endif
+  for (auto &p : particles)
+    particlesIndex.add(p.pos, &p);
 }
 
-static std::vector<DataBucket> particlesToBuckets(const std::vector<Particle> &particles) {
+
+static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
   Float delta = (energyLimits[1]-energyLimits[0])/EnergyBuckets;
 
   // generate initial buckets
@@ -295,7 +321,7 @@ static void transferPercentageOfEnergy(Particle &p1, Particle &p2, Float frac) {
   //std::cout << "transferPercentageOfEnergy < p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
 }
 
-static Float totalEnergy(std::vector<Particle>::const_iterator it1, std::vector<Particle>::const_iterator it2) {
+static Float totalEnergy(std::array<Particle,Ncreate>::const_iterator it1, std::array<Particle,Ncreate>::const_iterator it2) {
   Float acc = 0.;
   auto it = it1;
   while (it != it2)
@@ -316,9 +342,6 @@ class ImageSaver {
   // consts
   enum {SzX = 512, SzY = 512};
   // sub-area bounds that we image (we can't image all pixels because there's a million of them)
-  static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
-  static constexpr std::array<Float,2> imageAreaY = {{0.45,0.55}};
-  static constexpr std::array<Float,2> imageAreaZ = {{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
 public:
   ImageSaver() { // have a constructor primarily for initialize/deinitialize functions
     FreeImage_Initialise();
@@ -341,7 +364,8 @@ public:
     for (auto &p : particles) {
       if (inBounds(p)) {
         auto [x,y,zc/*0..199*/] = mapToImage(p);
-        pixel = {255,BYTE(255-zc-56),BYTE(255-zc-56)}; // BGR
+        //pixel = {255,BYTE(255-zc-56),BYTE(255-zc-56)}; // BGR
+        pixel = {0,0,0}; // BGR
 #if DBG_TRACK_PARTICLE
         if (p.track) {
           pixel = {0,0,255};
@@ -395,7 +419,6 @@ static void evolveGeometrically() {
 #endif
   // evolve
   Float t = 0.;
-  Float dt = 0.00001;
   for (int cycle = 0; cycle < 1000; cycle++) {
     { // move
       unsigned cntChangeBucket = 0;
@@ -405,7 +428,6 @@ static void evolveGeometrically() {
       std::cout << "evolveGeometrically: t=" << t << " moved=" << cntChangeBucket << std::endl;
     }
     if (1) { // collide
-      unsigned numColl = 0;
       const unsigned NSpaceSlots = ParticlesIndex::NSpaceSlots;
       for (int ix = 0; ix < NSpaceSlots; ix++) {
         const auto& sx = particlesIndex.get()[ix];
@@ -418,13 +440,14 @@ static void evolveGeometrically() {
               auto p1 = *it1;
               for (auto it2 = it1; ++it2 != ite; ) {
                 auto p2 = *it2;
-                //std::cout << "p1=" << p1 << " p2=" << p2 << std::endl;
+                std::cout << "p1=" << p1 << " p2=" << p2 << std::endl;
+                assert(p1!=p2);
                 if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
-                  //std::cout << "... YES-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
+                  std::cout << "... YES-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
                   p1->collide(*p2);
-                  numColl++;
+                  numCollisions++;
                 } else {
-                  //std::cout << "... NO-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
+                  std::cout << "... NO-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
                 }
               }
             } // same bucket
@@ -440,7 +463,7 @@ static void evolveGeometrically() {
                     auto p2 = *it2;
                     if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
                       p1->collide(*p2);
-                      numColl++;
+                      numCollisions++;
                     }
                   }
                 }
@@ -448,7 +471,7 @@ static void evolveGeometrically() {
           }
         }
       }
-      std::cout << "collisions: t=" << t << " numColl=" << numColl << std::endl;
+      std::cout << "collisions: t=" << t << " numCollisions=" << numCollisions << std::endl;
     }
 #if DBG_SAVE_IMAGES
     imageSaver.save(t, 5/*digits in time*/);
@@ -465,18 +488,8 @@ int main(int argc, const char *argv[]) {
   //
   // generate
   //
-  for (int i = 0; i < Ncreate; i++)
-    particles.push_back(genParticleEnergyRange());
-#if DBG_TRACK_PARTICLE
-  {
-    Float v = 0.001/*per-frame evolution percentage*/*0.08/*imageAreaX span*/ / 0.00001/*dt*/;
-    particles[0] = Particle(Vec3(0.5,0.5,0.5), Vec3(v,v,0));
-    particles[0].track = true;
-    //particles[1] = Particle(Vec3(0.5+0.053+particleRadius,0.5+0.053,0.5), Vec3(-v,-v,0));
-  }
-#endif
-  for (auto &p : particles)
-    particlesIndex.add(p.pos, &p);
+
+  generateParticles();
 
   // log
   std::cout << "energy-before=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
