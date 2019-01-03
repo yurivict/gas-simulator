@@ -45,10 +45,11 @@ static constexpr unsigned N = 1000000;
 static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
 static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
 static constexpr unsigned SZ = 1.;    // size of the box, when the particles are outside this box they reflect to the other side
+static constexpr unsigned numCycles = 4000;
 static constexpr Float dt = 0.00001;
 static constexpr Float initE1 = 1.9;
 static constexpr Float initE2 = 2.1;
-static constexpr std::array<Float,2> energyLimits = {{initE1/2, 1.5*initE2}}; // consider energies up to (..energyUpTo)
+static constexpr std::array<Float,2> energyLimits = {{0., 1.5*initE2}}; // consider energies up to (..energyUpTo)
 static constexpr unsigned EnergyBuckets = 200; // how many buckets we build
 static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
@@ -505,18 +506,19 @@ static void evolvePairwiseVelocity() {
   }
 }
 
-static void evolveGeometrically() {
+static void evolvePhysically() {
 #if DBG_SAVE_IMAGES
   imageSaver.save(0./*t*/, 5/*digits in time*/);
 #endif
   // evolve
   Float t = 0.;
-  for (int cycle = 0; cycle < 1000; cycle++) {
+  for (int cycle = 0; cycle < numCycles; cycle++) {
     // move
     for (auto &p : particles)
       p.move(dt);
     t += dt;
     // iter-particle collisions
+    auto prevStatsNumCollisions = statsNumCollisions;
     IterateThroughOverlaps([](Particle *p1, Particle *p2) {
       assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
       p1->collide(*p2);
@@ -526,7 +528,7 @@ static void evolveGeometrically() {
     imageSaver.save(t, 5/*digits in time*/);
 #endif
     // print tick and stats
-    std::cout << "tick: evolveGeometrically: t=" << t << " statsNumCollisions=" << statsNumCollisions << " statsNumBucketMoves=" << statsNumBucketMoves << std::endl;
+    std::cout << "tick: evolvePhysically: t=" << t << " statsNumCollisions=" << statsNumCollisions << " (+" << (statsNumCollisions-prevStatsNumCollisions) << ") statsNumBucketMoves=" << statsNumBucketMoves << std::endl;
   }
 }
 
@@ -545,7 +547,7 @@ int main(int argc, const char *argv[]) {
   //
   // initial log & stats
   //
-  std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
+  std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << " dt=" << dt << " numCycles=" << numCycles << std::endl;
   std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ*SZ*SZ)*100. << "%" << std::endl;
 
   //
@@ -556,7 +558,7 @@ int main(int argc, const char *argv[]) {
     evolvePairwiseVelocity();
 
   if (1)
-    evolveGeometrically();
+    evolvePhysically();
 
   // final log & stats
   std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
