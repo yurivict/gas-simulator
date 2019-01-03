@@ -8,6 +8,7 @@
 #include <array>
 #include <list>
 #include <vector>
+#include <set>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -18,14 +19,11 @@
 
 #include "Vec3.h"
 
-void xxx() {
-}
-
 // types
 typedef double Float;
 
-#define DBG_SAVE_IMAGES 1 // save images representing evolution of one particluar area
-#define DBG_TRACK_PARTICLE 1 // track one particle
+#define DBG_SAVE_IMAGES 1    // save images representing evolution of one particluar area
+#define DBG_TRACK_PARTICLE 0 // track one particle
 
 namespace math_constexpr {
 
@@ -43,23 +41,23 @@ constexpr unsigned ceillog2(unsigned x) {
 //
 // params
 //
-static constexpr unsigned N = 3; //1000000;
+static constexpr unsigned N = 1000000;
 static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
 static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
 static constexpr unsigned SZ = 1.;    // size of the box, when the particles are outside this box they reflect to the other side
-static constexpr Float dt = 0.001; //0.00001;
+static constexpr Float dt = 0.00001;
 static constexpr Float initE1 = 1.9;
 static constexpr Float initE2 = 2.1;
 static constexpr std::array<Float,2> energyLimits = {{initE1/2, 1.5*initE2}}; // consider energies up to (..energyUpTo)
 static constexpr unsigned EnergyBuckets = 200; // how many buckets we build
 static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
-static constexpr Float particleRadius = 0.25; //0.002; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
+static constexpr Float particleRadius = 0.002; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 
-static constexpr std::array<Float,2> imageAreaX = {{0,1}}; //{{0.45,0.55}};
-static constexpr std::array<Float,2> imageAreaY = {{0,1}}; //{{0.45,0.55}};
-static constexpr std::array<Float,2> imageAreaZ = {{0,1}}; //{{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
+static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
+static constexpr std::array<Float,2> imageAreaY = {{0.45,0.55}};
+static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
 
 //
 // Stats of the run
@@ -174,6 +172,9 @@ public:
   void add(Slot &slot, Particle *p) {
     slot.push_front(p);
   }
+  void add(Particle *p) {
+    add(findSlot(p), p);
+  }
   void del(const Vec3 &pos, Particle *p) {
     del(findSlot(pos), p);
   }
@@ -184,6 +185,9 @@ public:
         return;
       }
     assert(0); // unreachable
+  }
+  void del(Particle *p) {
+    del(findSlot(p), p);
   }
   Slot& findSlot(const Particle *p) {return index[coordToSlot(p->pos(X))][coordToSlot(p->pos(Y))][coordToSlot(p->pos(Z))];}
   Slot& findSlot(const Vec3 &pos) {return index[coordToSlot(pos(X))][coordToSlot(pos(Y))][coordToSlot(pos(Z))];}
@@ -208,7 +212,7 @@ static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
 }
 
 template<typename Fn>
-static void IterateThroughCollisions(Fn &&fn) {
+static void IterateThroughOverlaps(Fn &&fn) {
   const unsigned NSpaceSlots = ParticlesIndex::NSpaceSlots;
   for (int ix = 0; ix < NSpaceSlots; ix++) {
     const auto& sx = particlesIndex.get()[ix];
@@ -219,16 +223,22 @@ static void IterateThroughCollisions(Fn &&fn) {
         // process all pairs: same bucket
         for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
           auto p1 = *it1;
-          for (auto it2 = it1; ++it2 != ite;)
-            fn(p1, *it2);
+          for (auto it2 = it1; ++it2 != ite;) {
+            auto p2 = *it2;
+            if (p1->distance2(*p2) <= particleRadius2)
+              fn(p1, p2);
+          }
         } // same bucket
         // process all pairs: cross-bucket
         IterateCellNeighborsForward<NSpaceSlots>(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
           auto &slot2 = particlesIndex.get()[ix][iy][iz];
           for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
             auto p1 = *it1;
-            for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++)
-              fn(p1, *it2);
+            for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
+              auto p2 = *it2;
+              if (p1->distance2(*p2) <= particleRadius2)
+                fn(p1, p2);
+            }
           }
         });
       }
@@ -331,6 +341,7 @@ static void generateParticles() {
   };
   for (int i = 0; i < Ncreate; i++)
     particles[i] = genParticleEnergyRange();
+
 #if DBG_TRACK_PARTICLE
   {
     //Float v = 0.001/*per-frame evolution percentage*/*0.08/*imageAreaX span*/ / 0.00001/*dt*/;
@@ -340,8 +351,29 @@ static void generateParticles() {
     //particles[2] = Particle(Vec3(-0.05+0.5,-0.05+0.5,0.5), Vec3(2*v,2*v,0));
   }
 #endif
+
+  // add to index
   for (auto &p : particles)
     particlesIndex.add(p.pos, &p);
+
+  // remove overlaps
+  bool hadOverlaps;
+  do {
+    hadOverlaps = false;
+    // find overlaps
+    std::set<Particle*> overlaps;
+    IterateThroughOverlaps([&overlaps](Particle *p1, Particle *p2) {
+      overlaps.insert(p2);
+    });
+    // regenerate collided particles
+    hadOverlaps = !overlaps.empty();
+    for (auto p : overlaps) {
+      particlesIndex.del(p);
+      *p = genParticleEnergyRange();
+      particlesIndex.add(p);
+    }
+    std::cout << "generate.overlap.iteration: overlapsCount=" << overlaps.size() << std::endl;
+  } while (hadOverlaps);
 }
 
 
@@ -492,16 +524,10 @@ static void evolveGeometrically() {
       std::cout << "evolveGeometrically: t=" << t << " moved=" << cntChangeBucket << std::endl;
     }
     if (1) { // collide
-      IterateThroughCollisions([](Particle *p1, Particle *p2) {
-        std::cout << "p1=" << p1 << " p2=" << p2 << std::endl;
-        assert(p1!=p2);
-        if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
-          std::cout << "... YES-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
-          p1->collide(*p2);
-          numCollisions++;
-        } else {
-          std::cout << "... NO-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
-        }
+      IterateThroughOverlaps([](Particle *p1, Particle *p2) {
+        assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
+        p1->collide(*p2);
+        numCollisions++;
       });
       std::cout << "collisions: t=" << t << " numCollisions=" << numCollisions << std::endl;
     }
