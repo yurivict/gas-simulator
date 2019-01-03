@@ -22,7 +22,7 @@
 // types
 typedef double Float;
 
-#define DBG_SAVE_IMAGES 1    // save images representing evolution of one particluar area
+#define DBG_SAVE_IMAGES 0    // save images representing evolution of one particluar area
 #define DBG_TRACK_PARTICLE 0 // track one particle
 
 namespace math_constexpr {
@@ -49,7 +49,7 @@ static constexpr unsigned numCycles = 4000;
 static constexpr Float dt = 0.00001;
 static constexpr Float initE1 = 1.9;
 static constexpr Float initE2 = 2.1;
-static constexpr std::array<Float,2> energyLimits = {{0., 1.5*initE2}}; // consider energies up to (..energyUpTo)
+static constexpr std::array<Float,2> energyLimits = {{0., 2.*initE2}}; // consider energies up to (..energyUpTo)
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
@@ -159,7 +159,7 @@ public: // methods
 class ParticlesIndex { // index of particles in XYZ slot space
 public:
   typedef std::list<Particle*> Slot;
-  enum {NSpaceSlots = 1<<(math_constexpr::ceillog2(N)/3+1)};
+  enum {NSpaceSlots = 1<<(math_constexpr::ceillog2(N)/3+1)}; // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
 private:
   std::array<std::array<std::array<Slot,NSpaceSlots>,NSpaceSlots>,NSpaceSlots> index;
 public:
@@ -376,19 +376,21 @@ static void generateParticles() {
 }
 
 static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
-  Float delta = (energyLimits[1]-energyLimits[0])/NumOutputBuckets;
+  Float minV = Particle::energyToVelocity(energyLimits[0]);
+  Float maxV = Particle::energyToVelocity(energyLimits[1]);
+  Float deltaV = (maxV - minV)/NumOutputBuckets;
 
   // generate initial buckets
   std::vector<DataBucket> buckets;
   for (int i = 0; i < NumOutputBuckets; i++)
-    buckets.push_back(DataBucket(Particle::energyToVelocity(energyLimits[0] + delta*i + delta/2)));
+    buckets.push_back(DataBucket(minV + deltaV*i + deltaV/2));
 
   // count particles
   for (auto const &p : particles) {
-    auto E = p.energy();
-    if (E < energyLimits[0])
+    auto V = p.velocity();
+    if (V < minV)
       continue;
-    unsigned bucketNo = (E - energyLimits[0])/delta;
+    unsigned bucketNo = (V - minV)/deltaV;
     if (bucketNo >= NumOutputBuckets)
       continue; // discard the out-of-range energy
     buckets[bucketNo].cnt++;
@@ -545,7 +547,9 @@ int main(int argc, const char *argv[]) {
   // initial log & stats
   //
   std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << " dt=" << dt << " numCycles=" << numCycles << std::endl;
-  std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ*SZ*SZ)*100. << "%" << std::endl;
+  std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ*SZ*SZ)*100. << "%"
+                        << " avgParticlePerBucket=" << Float(Ncreate)/std::pow(Float(ParticlesIndex::NSpaceSlots),3)
+                        << std::endl;
 
   //
   // evolve
@@ -559,14 +563,14 @@ int main(int argc, const char *argv[]) {
   // final log & stats
   //
   std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
-  std::cout << "stats(fini): collisionsPerParticle=" << Float(statsNumCollisions)/N << "%" << std::endl;
+  std::cout << "stats(fini): collisionsPerParticle=" << Float(statsNumCollisions)/N << std::endl;
 
   //
   // output
   //
   writeFile<DataBucket>("buckets.txt", particlesToBuckets(particles), [](const DataBucket &b) {
     std::ostringstream os;
-    os << b.V << " " << Particle::adjustCountPerUnit(b.V, b.cnt);
+    os << b.V << " " << b.cnt;
     return os.str();
   });
 }
