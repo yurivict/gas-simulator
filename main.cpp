@@ -55,10 +55,11 @@ static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 static constexpr Float particleRadius = 0.003; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
-
+#if DBG_SAVE_IMAGES
 static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaY = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
+#endif
 
 //
 // Stats of the run
@@ -537,6 +538,12 @@ static void evolvePhysically() {
 //
 
 int main(int argc, const char *argv[]) {
+  //
+  // checks
+  //
+
+  assert(2*particleRadius < Float(SZ)/ParticlesIndex::NSpaceSlots); // particle diameter should be < index slot size, because otherwise collision detection
+                                                                    // needs to look out more than in 1 slot away which makes it impractical
 
   //
   // generate
