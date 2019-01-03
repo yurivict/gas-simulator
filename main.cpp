@@ -16,6 +16,9 @@
 #include <cmath>
 #include <random>
 #include <chrono>
+#include <ctime>
+
+#include <nlohmann/json.hpp>
 
 #include "Vec3.h"
 
@@ -497,6 +500,46 @@ static ImageSaver imageSaver;
 #endif
 
 //
+// Serializer/unserializer
+//
+
+class Serializer {
+  using json = nlohmann::json;
+public:
+  static auto serialize() {
+    auto serializeVec = [](const Vec3 &v){
+      json j = json::array();
+      j.insert(j.end(), v(X));
+      j.insert(j.end(), v(Y));
+      j.insert(j.end(), v(Z));
+      return j;
+    };
+    json arr = json::array();
+    for (auto &p : particles) {
+      json particle = json::object();
+      particle["x"] = serializeVec(p.pos);
+      particle["v"] = serializeVec(p.v);
+      arr.insert(arr.end(), particle);
+    }
+    return arr;
+  }
+  static void unserialize(const json &j) {
+    auto unserializeVec = [](json &j){
+      Vec3 v;
+      v(X) = j[0];
+      v(Y) = j[1];
+      v(Z) = j[2];
+      return v;
+    };
+    unsigned i = 0;
+    for (auto &p : particles) {
+      auto particle = j[i++];
+      p = Particle(unserializeVec(particle["x"]), unserializeVec(particle["v"]));
+    }
+  }
+}; // Serializer
+
+//
 // Evolve
 //
 
@@ -546,9 +589,18 @@ int main(int argc, const char *argv[]) {
                                                                     // needs to look out more than in 1 slot away which makes it impractical
 
   //
-  // generate
+  // generate or restart
   //
-  generateParticles();
+  if (argc == 3 && std::string(argv[1]) == "--restart") {
+    std::cout << "unserializing from " << argv[2] << " ..." << std::endl;
+    std::ifstream file;
+    file.open(argv[2], std::ifstream::in);
+    Serializer::unserialize(nlohmann::json::parse(file));
+    file.close();
+    std::cout << "done unserializing from " << argv[2] << " ..." << std::endl;
+  } else {
+    generateParticles();
+  }
 
   //
   // initial log & stats
@@ -580,5 +632,20 @@ int main(int argc, const char *argv[]) {
     os << b.V << " " << b.cnt;
     return os.str();
   });
+
+  //
+  // serialize for later reuse
+  //
+
+  {
+    std::ostringstream fname;
+    fname << "particles-" << std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ".json";
+    std::cout << "serializing to " << fname.str() << " ..." << std::endl;
+    std::ofstream file;
+    file.open(fname.str(), std::ofstream::out);
+    file << Serializer::serialize();
+    file.close();
+    std::cout << "done serializing to " << fname.str() << " ..." << std::endl;
+  }
 }
 
