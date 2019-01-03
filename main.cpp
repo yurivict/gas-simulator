@@ -1,3 +1,6 @@
+//
+// Copyright (C) 2019 by Yuri Victorovich. All rights reserved.
+//
 
 #include <stdlib.h>
 
@@ -94,7 +97,24 @@ public: // methods
     return v.len();
   }
   bool move(Float dt) {
-    return move(Vec3(clp(pos(X) + dt*v(X)), clp(pos(Y) + dt*v(Y)), clp(pos(Z) + dt*v(Z))));
+    auto collideWall = [](Float &partCoord, Float &partVelocity, Float wall1, Float wall2){
+      if (partCoord < wall1) {
+        partCoord = wall1 + (wall1-partCoord);
+        partVelocity = -partVelocity;
+      }
+      if (partCoord > wall2) {
+        partCoord = wall2 - (partCoord-wall2);
+        partVelocity = -partVelocity;
+      }
+    };
+    // move the point
+    Vec3 pt(pos(X) + dt*v(X), pos(Y) + dt*v(Y), pos(Z) + dt*v(Z));
+    // collide with walls
+    collideWall(pt(X), v(X), 0.+particleRadius,SZ-particleRadius);
+    collideWall(pt(Y), v(Y), 0.+particleRadius,SZ-particleRadius);
+    collideWall(pt(Z), v(Z), 0.+particleRadius,SZ-particleRadius);
+    // move to point
+    return move(pt);
   }
   bool move(const Vec3 &newPos);
   static Float energyToVelocity(Float E) { // a reverse of energy()
@@ -221,7 +241,7 @@ public:
     generator(seed),
     uniform01(0.0, 1.0),
     uniform1N(1,Ncreate),
-    uniformCoord(0.0, SZ),
+    uniformCoord(0.0+particleRadius, SZ-particleRadius),
     uniformEnergy(initE1, initE2)
   { }
   auto rand01() {
@@ -259,6 +279,7 @@ public:
 static Random rg;
 
 static void generateParticles() {
+  // TODO eliminate initial overlaps
   auto genParticleEnergyRange = []() {
     auto [sphX,sphY,sphZ] = rg.genSphereCoords();
     auto E = rg.genEnergy();
