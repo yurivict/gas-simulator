@@ -52,7 +52,7 @@ static constexpr std::array<Float,2> energyLimits = {{initE1/2, 1.5*initE2}}; //
 static constexpr unsigned EnergyBuckets = 200; // how many buckets we build
 static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
-static constexpr Float particleRadius = 0.002; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
+static constexpr Float particleRadius = 0.003; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 
 static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
@@ -62,7 +62,8 @@ static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particl
 //
 // Stats of the run
 //
-unsigned numCollisions = 0;
+unsigned statsNumBucketMoves = 0;
+unsigned statsNumCollisions = 0;
 
 //
 // Classes
@@ -94,7 +95,7 @@ public: // methods
   Float velocity() const {
     return v.len();
   }
-  bool move(Float dt) {
+  void move(Float dt) {
     auto collideWall = [](Float &partCoord, Float &partVelocity, Float wall1, Float wall2){
       if (partCoord < wall1) {
         partCoord = wall1 + (wall1-partCoord);
@@ -112,9 +113,9 @@ public: // methods
     collideWall(pt(Y), v(Y), 0.+particleRadius,SZ-particleRadius);
     collideWall(pt(Z), v(Z), 0.+particleRadius,SZ-particleRadius);
     // move to point
-    return move(pt);
+    move(pt);
   }
-  bool move(const Vec3 &newPos);
+  void move(const Vec3 &newPos);
   static Float energyToVelocity(Float E) { // a reverse of energy()
     return std::sqrt(E*2/m);
   }
@@ -189,7 +190,7 @@ public:
   void del(Particle *p) {
     del(findSlot(p), p);
   }
-  Slot& findSlot(const Particle *p) {return index[coordToSlot(p->pos(X))][coordToSlot(p->pos(Y))][coordToSlot(p->pos(Z))];}
+  Slot& findSlot(const Particle *p) {return findSlot(p->pos);}
   Slot& findSlot(const Vec3 &pos) {return index[coordToSlot(pos(X))][coordToSlot(pos(Y))][coordToSlot(pos(Z))];}
 private:
   static unsigned coordToSlot(Float c) {
@@ -250,7 +251,7 @@ static void IterateThroughOverlaps(Fn &&fn) {
 // Separate methods
 //
 
-bool Particle::move(const Vec3 &newPos) {
+void Particle::move(const Vec3 &newPos) {
   auto &slot1 = particlesIndex.findSlot(this);
   pos = newPos;
   auto &slot2 = particlesIndex.findSlot(this);
@@ -258,9 +259,7 @@ bool Particle::move(const Vec3 &newPos) {
     particlesIndex.del(slot1, this);
     particlesIndex.add(slot2, this);
     //std::cout << "MOVE p=" << this << " x=" << x << " y=" << y << " z=" << z << std::endl;
-    return true; // moved between slots
-  } else {
-    return false; // stayed in the same slot
+    statsNumBucketMoves++;
   }
 }
 
@@ -456,7 +455,6 @@ public:
     RGBQUAD pixel;
     pixel = {255,255,255};
     FreeImage_FillBackground(bitmap, &pixel);
-    unsigned cnt = 0;
     for (auto &p : particles) {
       if (inBounds(p)) {
         auto [x,y,zc/*0..199*/] = mapToImage(p);
@@ -469,12 +467,10 @@ public:
         }
 #endif
         FreeImage_SetPixelColor(bitmap,x,y,&pixel);
-        cnt++;
       }
     }
     FreeImage_Save(FIF_PNG, bitmap, fname, 0);
     FreeImage_Unload(bitmap);
-    std::cout << "ImageSaver::save: t=" << t << " -> cnt=" << cnt << std::endl;
   }
 private: // internals
   static bool inBounds(const Particle &p) {
@@ -516,24 +512,21 @@ static void evolveGeometrically() {
   // evolve
   Float t = 0.;
   for (int cycle = 0; cycle < 1000; cycle++) {
-    { // move
-      unsigned cntChangeBucket = 0;
-      for (auto &p : particles)
-        cntChangeBucket += p.move(dt);
-      t += dt;
-      std::cout << "evolveGeometrically: t=" << t << " moved=" << cntChangeBucket << std::endl;
-    }
-    if (1) { // collide
-      IterateThroughOverlaps([](Particle *p1, Particle *p2) {
-        assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
-        p1->collide(*p2);
-        numCollisions++;
-      });
-      std::cout << "collisions: t=" << t << " numCollisions=" << numCollisions << std::endl;
-    }
+    // move
+    for (auto &p : particles)
+      p.move(dt);
+    t += dt;
+    // iter-particle collisions
+    IterateThroughOverlaps([](Particle *p1, Particle *p2) {
+      assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
+      p1->collide(*p2);
+      statsNumCollisions++;
+    });
 #if DBG_SAVE_IMAGES
     imageSaver.save(t, 5/*digits in time*/);
 #endif
+    // print tick and stats
+    std::cout << "tick: evolveGeometrically: t=" << t << " statsNumCollisions=" << statsNumCollisions << " statsNumBucketMoves=" << statsNumBucketMoves << std::endl;
   }
 }
 
@@ -549,8 +542,11 @@ int main(int argc, const char *argv[]) {
 
   generateParticles();
 
-  // log
-  std::cout << "energy-before=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
+  //
+  // initial log & stats
+  //
+  std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
+  std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ*SZ*SZ)*100. << "%" << std::endl;
 
   //
   // evolve
@@ -562,8 +558,9 @@ int main(int argc, const char *argv[]) {
   if (1)
     evolveGeometrically();
 
-  // log
-  std::cout << "energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
+  // final log & stats
+  std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
+  std::cout << "stats(fini): collisionsPerParticle=" << Float(statsNumCollisions)/N << "%" << std::endl;
 
   //
   // output
