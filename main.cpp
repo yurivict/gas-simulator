@@ -50,7 +50,7 @@ static constexpr Float dt = 0.00001;
 static constexpr Float initE1 = 1.9;
 static constexpr Float initE2 = 2.1;
 static constexpr std::array<Float,2> energyLimits = {{0., 1.5*initE2}}; // consider energies up to (..energyUpTo)
-static constexpr unsigned EnergyBuckets = 200; // how many buckets we build
+static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 static constexpr Float particleRadius = 0.003; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
@@ -300,15 +300,15 @@ public:
   auto rand01() {
     return uniform01(generator);
   }
-  auto genSphereAngles() {
+  auto sphereAngles() {
     // from http://corysimon.github.io/articles/uniformdistn-on-sphere/
     Float theta = 2 * M_PI * rand01();
     Float phi = std::acos(1 - 2 * rand01());
     return std::array<Float,2>({{theta,phi}});
   }
-  auto genSphereCoords() {
+  auto sphereCoords() {
     // from http://corysimon.github.io/articles/uniformdistn-on-sphere/
-    auto [theta,phi] = genSphereAngles();
+    auto [theta,phi] = sphereAngles();
     // convert to x/y/z
     double x = std::sin(phi)*std::cos(theta);
     double y = std::sin(phi)*std::sin(theta);
@@ -316,13 +316,13 @@ public:
     //
     return std::array<Float,3>({{x,y,z}});
   }
-  auto genCoord() {
+  auto coord() {
     return uniformCoord(generator);
   }
-  auto genEnergy() {
+  auto energy() {
     return uniformEnergy(generator);
   }
-  auto randParticlePair() {
+  auto particlePair() {
     unsigned i1, i2;
     while ((i1 = uniform1N(generator)) == (i2 = uniform1N(generator))) { }
     return std::array<unsigned,2>({{i1,i2}});
@@ -334,10 +334,10 @@ static Random rg;
 static void generateParticles() {
   // TODO eliminate initial overlaps
   auto genParticleEnergyRange = []() {
-    auto [sphX,sphY,sphZ] = rg.genSphereCoords();
-    auto E = rg.genEnergy();
+    auto [sphX,sphY,sphZ] = rg.sphereCoords();
+    auto E = rg.energy();
     auto V = Particle::energyToVelocity(E);
-    return Particle(Vec3(rg.genCoord(), rg.genCoord(), rg.genCoord()), Vec3(sphX*V, sphY*V, sphZ*V));
+    return Particle(Vec3(rg.coord(), rg.coord(), rg.coord()), Vec3(sphX*V, sphY*V, sphZ*V));
   };
   for (int i = 0; i < Ncreate; i++)
     particles[i] = genParticleEnergyRange();
@@ -378,11 +378,11 @@ static void generateParticles() {
 
 
 static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
-  Float delta = (energyLimits[1]-energyLimits[0])/EnergyBuckets;
+  Float delta = (energyLimits[1]-energyLimits[0])/NumOutputBuckets;
 
   // generate initial buckets
   std::vector<DataBucket> buckets;
-  for (int i = 0; i < EnergyBuckets; i++)
+  for (int i = 0; i < NumOutputBuckets; i++)
     buckets.push_back(DataBucket(Particle::energyToVelocity(energyLimits[0] + delta*i + delta/2)));
 
   // count particles
@@ -391,7 +391,7 @@ static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncre
     if (E < energyLimits[0])
       continue;
     unsigned bucketNo = (E - energyLimits[0])/delta;
-    if (bucketNo >= EnergyBuckets)
+    if (bucketNo >= NumOutputBuckets)
       continue; // discard the out-of-range energy
     buckets[bucketNo].cnt++;
   }
@@ -501,7 +501,7 @@ static ImageSaver imageSaver;
 
 static void evolvePairwiseVelocity() {
   for (int i = 0; i < Pairwise_RandomizeRounds; i++) {
-    auto pp = rg.randParticlePair();
+    auto pp = rg.particlePair();
     transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
   }
 }
