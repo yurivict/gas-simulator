@@ -195,6 +195,15 @@ private:
 
 ParticlesIndex particlesIndex;
 
+template<unsigned Max, typename Fn>
+void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
+  for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
+        {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
+        {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
+    if (0 <= ix+dix && ix+dix < Max && 0 <= iy+diy && iy+diy < Max && 0 <= iz+diz && iz+diz < Max)
+      fn(ix+dix, iy+diy, iz+diz);
+}
+
 // Separate methods
 
 bool Particle::move(const Vec3 &newPos) {
@@ -473,22 +482,19 @@ static void evolveGeometrically() {
               }
             } // same bucket
             // process all pairs: cross-bucket
-            for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
-                  {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
-                    {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
-              if (0 <= ix+dix && ix+dix < NSpaceSlots && 0 <= iy+diy && iy+diy < NSpaceSlots && 0 <= iz+diz && iz+diz < NSpaceSlots) {
-                auto &slot2 = particlesIndex.get()[ix+dix][iy+diy][iz+diz];
-                for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
-                  auto p1 = *it1;
-                  for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
-                    auto p2 = *it2;
-                    if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
-                      p1->collide(*p2);
-                      numCollisions++;
-                    }
+            IterateCellNeighborsForward<NSpaceSlots>(ix,iy,iz, [&sz](int ix, int iy, int iz) {
+              auto &slot2 = particlesIndex.get()[ix][iy][iz];
+              for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
+                auto p1 = *it1;
+                for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
+                  auto p2 = *it2;
+                  if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
+                    p1->collide(*p2);
+                    numCollisions++;
                   }
                 }
               }
+            });
           }
         }
       }
