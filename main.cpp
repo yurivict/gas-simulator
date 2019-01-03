@@ -195,16 +195,50 @@ private:
 
 ParticlesIndex particlesIndex;
 
+//
+// Helper classes: iterators
+//
 template<unsigned Max, typename Fn>
-void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
+static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
   for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
         {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
-        {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
+          {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
     if (0 <= ix+dix && ix+dix < Max && 0 <= iy+diy && iy+diy < Max && 0 <= iz+diz && iz+diz < Max)
       fn(ix+dix, iy+diy, iz+diz);
 }
 
+template<typename Fn>
+static void IterateThroughCollisions(Fn &&fn) {
+  const unsigned NSpaceSlots = ParticlesIndex::NSpaceSlots;
+  for (int ix = 0; ix < NSpaceSlots; ix++) {
+    const auto& sx = particlesIndex.get()[ix];
+    for (int iy = 0; iy < NSpaceSlots; iy++) {
+      const auto& sy = sx[iy];
+      for (int iz = 0; iz < NSpaceSlots; iz++) {
+        const auto& sz = sy[iz];
+        // process all pairs: same bucket
+        for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
+          auto p1 = *it1;
+          for (auto it2 = it1; ++it2 != ite;)
+            fn(p1, *it2);
+        } // same bucket
+        // process all pairs: cross-bucket
+        IterateCellNeighborsForward<NSpaceSlots>(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
+          auto &slot2 = particlesIndex.get()[ix][iy][iz];
+          for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
+            auto p1 = *it1;
+            for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++)
+              fn(p1, *it2);
+          }
+        });
+      }
+    }
+  }
+}
+
+//
 // Separate methods
+//
 
 bool Particle::move(const Vec3 &newPos) {
   auto &slot1 = particlesIndex.findSlot(this);
@@ -458,46 +492,17 @@ static void evolveGeometrically() {
       std::cout << "evolveGeometrically: t=" << t << " moved=" << cntChangeBucket << std::endl;
     }
     if (1) { // collide
-      const unsigned NSpaceSlots = ParticlesIndex::NSpaceSlots;
-      for (int ix = 0; ix < NSpaceSlots; ix++) {
-        const auto& sx = particlesIndex.get()[ix];
-        for (int iy = 0; iy < NSpaceSlots; iy++) {
-          const auto& sy = sx[iy];
-          for (int iz = 0; iz < NSpaceSlots; iz++) {
-            const auto& sz = sy[iz];
-            // process all pairs: same bucket
-            for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
-              auto p1 = *it1;
-              for (auto it2 = it1; ++it2 != ite; ) {
-                auto p2 = *it2;
-                std::cout << "p1=" << p1 << " p2=" << p2 << std::endl;
-                assert(p1!=p2);
-                if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
-                  std::cout << "... YES-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
-                  p1->collide(*p2);
-                  numCollisions++;
-                } else {
-                  std::cout << "... NO-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
-                }
-              }
-            } // same bucket
-            // process all pairs: cross-bucket
-            IterateCellNeighborsForward<NSpaceSlots>(ix,iy,iz, [&sz](int ix, int iy, int iz) {
-              auto &slot2 = particlesIndex.get()[ix][iy][iz];
-              for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
-                auto p1 = *it1;
-                for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
-                  auto p2 = *it2;
-                  if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
-                    p1->collide(*p2);
-                    numCollisions++;
-                  }
-                }
-              }
-            });
-          }
+      IterateThroughCollisions([](Particle *p1, Particle *p2) {
+        std::cout << "p1=" << p1 << " p2=" << p2 << std::endl;
+        assert(p1!=p2);
+        if (p1->collisionCourse(*p2) && p1->distance2(*p2) <= particleRadius2) {
+          std::cout << "... YES-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
+          p1->collide(*p2);
+          numCollisions++;
+        } else {
+          std::cout << "... NO-collision: course=" << p1->collisionCourse(*p2) << " distance=" << sqrt(p1->distance2(*p2)) << std::endl;
         }
-      }
+      });
       std::cout << "collisions: t=" << t << " numCollisions=" << numCollisions << std::endl;
     }
 #if DBG_SAVE_IMAGES
