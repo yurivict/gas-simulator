@@ -63,15 +63,14 @@ static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particl
 //
 // Stats of the run
 //
-unsigned statsNumBucketMoves = 0;
-unsigned statsNumCollisions = 0;
+static unsigned statsNumBucketMoves = 0;
+static unsigned statsNumCollisions = 0;
 
 //
 // Classes
 //
 
 class ParticlesIndex;
-extern ParticlesIndex particlesIndex;
 
 class Particle {
 public: // data
@@ -199,7 +198,7 @@ private:
   }
 }; // ParticlesIndex
 
-ParticlesIndex particlesIndex;
+static ParticlesIndex particlesIndex;
 
 //
 // Helper classes: iterators
@@ -275,7 +274,7 @@ public:
 // Data
 //
 
-std::array<Particle, Ncreate> particles;
+static std::array<Particle, Ncreate> particles;
 
 //
 // Random value generator
@@ -375,7 +374,6 @@ static void generateParticles() {
     std::cout << "generate.overlap.iteration: overlapsCount=" << overlaps.size() << std::endl;
   } while (hadOverlaps);
 }
-
 
 static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
   Float delta = (energyLimits[1]-energyLimits[0])/NumOutputBuckets;
@@ -541,7 +539,6 @@ int main(int argc, const char *argv[]) {
   //
   // generate
   //
-
   generateParticles();
 
   //
@@ -553,14 +550,14 @@ int main(int argc, const char *argv[]) {
   //
   // evolve
   //
-
   if (0)
     evolvePairwiseVelocity();
-
   if (1)
     evolvePhysically();
 
+  //
   // final log & stats
+  //
   std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
   std::cout << "stats(fini): collisionsPerParticle=" << Float(statsNumCollisions)/N << "%" << std::endl;
 
