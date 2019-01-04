@@ -2,9 +2,6 @@ buckets <- read.delim("~/gas-simulator/buckets.txt", sep=" ", header=F)
 
 fn <- buckets
 
-#for(i in buckets){for(j in i){print("--");print(j)}}
-#for(i in buckets){print("--");print(i)}
-
 for(vv in buckets[1]) {
   r <- 1
   for (v in vv) {
