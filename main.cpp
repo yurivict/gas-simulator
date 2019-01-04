@@ -42,6 +42,27 @@ constexpr unsigned ceillog2(unsigned x) {
 }; // math_constexpr
 
 //
+// relevant physics laws
+//
+
+// Ideal gas law: https://en.wikipedia.org/wiki/Ideal_gas_law
+// PV = nRT    // n is number of moles
+
+//
+// physics constants
+//
+
+static constexpr Float Na = 6.022e+23;  // Avogadro constant
+static constexpr Float R = 8.3144598;   // 8.3144598(48) in kg m² s⁻² K−1 mol−1 , see https://en.wikipedia.org/wiki/Gas_constant
+static constexpr Float Troom = 293.15;  // room temperature in Kelvins: 20°C=293.15K
+static constexpr Float Patm = 101325;   // 101.325 kPa
+
+// quick gas computations:
+// Vmol(0°C)  = 1mol*R*T=273.15K/101325 ≈ 0.0224m³ = 22.4dm³
+// Vmol(20°C) = 1mol*R*T=293.15K/101325 ≈ 0.0241m³ = 24.1dm³
+// V(1mil, 20°C) = (n=1mil/Na)RT/Patm ≈ 0.342e-6 (~0.3μm)
+
+//
 // params
 //
 static constexpr unsigned N = 1000000;
