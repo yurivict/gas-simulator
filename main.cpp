@@ -17,6 +17,7 @@
 #include <random>
 #include <chrono>
 #include <ctime>
+#include <limits>
 
 #include <nlohmann/json.hpp>
 
@@ -37,6 +38,25 @@ constexpr unsigned floorlog2(unsigned x) {
 
 constexpr unsigned ceillog2(unsigned x) {
   return x == 1 ? 0 : floorlog2(x - 1) + 1;
+}
+
+namespace Detail
+{
+  double constexpr cbrtNewtonRaphson(double x, double curr, double prev) {
+    return curr == prev
+      ? curr
+      : cbrtNewtonRaphson(x, curr - (curr*curr*curr - x)/(3*curr*curr), curr);
+  }
+}
+
+double constexpr cbrt(double x) {
+  return x >= 0 && x < std::numeric_limits<double>::infinity()
+    ? Detail::cbrtNewtonRaphson(x, x, 0)
+    : std::numeric_limits<double>::quiet_NaN();
+}
+
+unsigned constexpr lim1(unsigned i) {
+  return i >= 1 ? i : 1;
 }
 
 }; // math_constexpr
@@ -67,8 +87,10 @@ static constexpr Float Patm = 101325;   // 101.325 kPa
 //
 static constexpr unsigned N = 1000000;
 static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
+static constexpr Float particlesPerBucket = 2.; // average number of particles per bucket. Performance drops when the number is >5
 static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
-static constexpr unsigned SZ = 1.;    // size of the box, when the particles are outside this box they reflect to the other side
+static constexpr Float SZa[3] = {1.,1.,1.};    // size of the box, when the particles are outside this box they reflect to the other side
+static constexpr Float SZ(int i) {return SZa[i-1];}
 static constexpr unsigned numCycles = 4000;
 static constexpr Float dt = 0.00001;
 static constexpr Float initE1 = 1.9;
@@ -134,9 +156,9 @@ public: // methods
     // move the point
     Vec3 pt(pos(X) + dt*v(X), pos(Y) + dt*v(Y), pos(Z) + dt*v(Z));
     // collide with walls
-    collideWall(pt(X), v(X), 0.+particleRadius,SZ-particleRadius);
-    collideWall(pt(Y), v(Y), 0.+particleRadius,SZ-particleRadius);
-    collideWall(pt(Z), v(Z), 0.+particleRadius,SZ-particleRadius);
+    collideWall(pt(X), v(X), 0.+particleRadius,SZ(X)-particleRadius);
+    collideWall(pt(Y), v(Y), 0.+particleRadius,SZ(Y)-particleRadius);
+    collideWall(pt(Z), v(Z), 0.+particleRadius,SZ(Z)-particleRadius);
     // move to point
     move(pt);
   }
@@ -168,13 +190,6 @@ public: // methods
     other.v -= dv;
     //std::cout << "collide < this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
   }
-  static Float clp(Float c) {
-    while (c < 0.)
-      c += SZ;
-    while (c >= SZ)
-      c -= SZ;
-    return c;
-  }
   friend std::ostream& operator<<(std::ostream &os, const Particle &p) {
     os << "{pos=" << p.pos << " v=" << p.v << "}";
     return os;
@@ -184,12 +199,15 @@ public: // methods
 class ParticlesIndex { // index of particles in XYZ slot space
 public:
   typedef std::list<Particle*> Slot;
-  enum {NSpaceSlots = 1<<(math_constexpr::ceillog2(N)/3+1)}; // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
+  static constexpr unsigned NSpaceSlots[3] = {math_constexpr::lim1((unsigned)(SZ(X)/math_constexpr::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
+                                              math_constexpr::lim1((unsigned)(SZ(Y)/math_constexpr::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
+                                              math_constexpr::lim1((unsigned)(SZ(Z)/math_constexpr::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))};
+  // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
 private:
-  std::array<std::array<std::array<Slot,NSpaceSlots>,NSpaceSlots>,NSpaceSlots> index;
+  std::array<std::array<std::array<Slot,NSpaceSlots[0]>,NSpaceSlots[1]>,NSpaceSlots[2]> index;
 public:
   ParticlesIndex() {
-    std::cout << "ParticlesIndex: NSpaceSlots=" << NSpaceSlots << std::endl;
+    std::cout << "ParticlesIndex: NSpaceSlots={" << NSpaceSlots[0] << "," << NSpaceSlots[1] << "," << NSpaceSlots[2] << "}" << std::endl;
   }
   auto& get() {return index;}
   void add(const Vec3 &pos, Particle *p) {
@@ -216,10 +234,10 @@ public:
     del(findSlot(p), p);
   }
   Slot& findSlot(const Particle *p) {return findSlot(p->pos);}
-  Slot& findSlot(const Vec3 &pos) {return index[coordToSlot(pos(X))][coordToSlot(pos(Y))][coordToSlot(pos(Z))];}
+  Slot& findSlot(const Vec3 &pos) {return index[coordToSlot(X, pos(X))][coordToSlot(Y, pos(Y))][coordToSlot(Z, pos(Z))];}
 private:
-  static unsigned coordToSlot(Float c) {
-    return c / (1./NSpaceSlots);
+  static unsigned coordToSlot(unsigned ci, Float c) {
+    return c / (SZ(ci)/NSpaceSlots[ci-1]);
   }
 }; // ParticlesIndex
 
@@ -228,23 +246,22 @@ static ParticlesIndex particlesIndex;
 //
 // Helper classes: iterators
 //
-template<unsigned Max, typename Fn>
+template<const unsigned Max[3], typename Fn>
 static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
   for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
         {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
           {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
-    if (0 <= ix+dix && ix+dix < Max && 0 <= iy+diy && iy+diy < Max && 0 <= iz+diz && iz+diz < Max)
+    if (0 <= ix+dix && ix+dix < (int)Max[0] && 0 <= iy+diy && iy+diy < (int)Max[1] && 0 <= iz+diz && iz+diz < (int)Max[2])
       fn(ix+dix, iy+diy, iz+diz);
 }
 
 template<typename Fn>
 static void IterateThroughOverlaps(Fn &&fn) {
-  const unsigned NSpaceSlots = ParticlesIndex::NSpaceSlots;
-  for (int ix = 0; ix < NSpaceSlots; ix++) {
+  for (unsigned ix = 0; ix < ParticlesIndex::NSpaceSlots[0]; ix++) {
     const auto& sx = particlesIndex.get()[ix];
-    for (int iy = 0; iy < NSpaceSlots; iy++) {
+    for (unsigned iy = 0; iy < ParticlesIndex::NSpaceSlots[1]; iy++) {
       const auto& sy = sx[iy];
-      for (int iz = 0; iz < NSpaceSlots; iz++) {
+      for (unsigned iz = 0; iz < ParticlesIndex::NSpaceSlots[2]; iz++) {
         const auto& sz = sy[iz];
         // process all pairs: same bucket
         for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
@@ -256,7 +273,7 @@ static void IterateThroughOverlaps(Fn &&fn) {
           }
         } // same bucket
         // process all pairs: cross-bucket
-        IterateCellNeighborsForward<NSpaceSlots>(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
+        IterateCellNeighborsForward<ParticlesIndex::NSpaceSlots>(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
           auto &slot2 = particlesIndex.get()[ix][iy][iz];
           for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
             auto p1 = *it1;
@@ -306,19 +323,25 @@ static std::array<Particle, Ncreate> particles;
 //
 
 class Random {
+  // types
+  typedef std::uniform_real_distribution<Float> urdFloat;
+  typedef std::uniform_int_distribution<unsigned> uidUnsigned;
+  // fields
   unsigned                                 seed;
   std::mt19937                             generator;
-  std::uniform_real_distribution<Float>    uniform01;
-  std::uniform_int_distribution<unsigned>  uniform1N;
-  std::uniform_real_distribution<Float>    uniformCoord;
-  std::uniform_real_distribution<Float>    uniformEnergy;
+  urdFloat     uniform01;
+  uidUnsigned  uniform1N;
+  urdFloat     uniformCoord[3]; // per dimension
+  urdFloat     uniformEnergy;
 public:
   Random()
   : seed(std::chrono::system_clock::now().time_since_epoch().count()),
     generator(seed),
     uniform01(0.0, 1.0),
     uniform1N(1,Ncreate),
-    uniformCoord(0.0+particleRadius, SZ-particleRadius),
+    uniformCoord{urdFloat(0.0+particleRadius, SZ(X)-particleRadius),
+                 urdFloat(0.0+particleRadius, SZ(Y)-particleRadius),
+                 urdFloat(0.0+particleRadius, SZ(Z)-particleRadius)},
     uniformEnergy(initE1, initE2)
   { }
   auto rand01() {
@@ -340,8 +363,8 @@ public:
     //
     return std::array<Float,3>({{x,y,z}});
   }
-  auto coord() {
-    return uniformCoord(generator);
+  auto coord(unsigned idx) {
+    return uniformCoord[idx](generator);
   }
   auto energy() {
     return uniformEnergy(generator);
@@ -361,9 +384,9 @@ static void generateParticles() {
     auto [sphX,sphY,sphZ] = rg.sphereCoords();
     auto E = rg.energy();
     auto V = Particle::energyToVelocity(E);
-    return Particle(Vec3(rg.coord(), rg.coord(), rg.coord()), Vec3(sphX*V, sphY*V, sphZ*V));
+    return Particle(Vec3(rg.coord(0), rg.coord(1), rg.coord(2)), Vec3(sphX*V, sphY*V, sphZ*V));
   };
-  for (int i = 0; i < Ncreate; i++)
+  for (unsigned i = 0; i < Ncreate; i++)
     particles[i] = genParticleEnergyRange();
 
 #if DBG_TRACK_PARTICLE
@@ -407,7 +430,7 @@ static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncre
 
   // generate initial buckets
   std::vector<DataBucket> buckets;
-  for (int i = 0; i < NumOutputBuckets; i++)
+  for (unsigned i = 0; i < NumOutputBuckets; i++)
     buckets.push_back(DataBucket(minV + deltaV*i + deltaV/2));
 
   // count particles
@@ -565,7 +588,7 @@ public:
 //
 
 static void evolvePairwiseVelocity() {
-  for (int i = 0; i < Pairwise_RandomizeRounds; i++) {
+  for (unsigned i = 0; i < Pairwise_RandomizeRounds; i++) {
     auto pp = rg.particlePair();
     transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
   }
@@ -577,7 +600,7 @@ static void evolvePhysically() {
 #endif
   // evolve
   Float t = 0.;
-  for (int cycle = 0; cycle < numCycles; cycle++) {
+  for (unsigned cycle = 0; cycle < numCycles; cycle++) {
     // move
     for (auto &p : particles)
       p.move(dt);
@@ -605,9 +628,16 @@ int main(int argc, const char *argv[]) {
   //
   // checks
   //
+  for (auto c : {X,Y,Z})
+    assert(2*particleRadius < Float(SZ(c))/ParticlesIndex::NSpaceSlots[c-1]); // particle diameter should be < index slot size, because otherwise collision detection
+                                                                              // needs to look out more than in 1 slot away which makes it impractical
+  //
+  // stats
+  //
 
-  assert(2*particleRadius < Float(SZ)/ParticlesIndex::NSpaceSlots); // particle diameter should be < index slot size, because otherwise collision detection
-                                                                    // needs to look out more than in 1 slot away which makes it impractical
+  std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
+                        << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
+                        << std::endl;
 
   //
   // generate or restart
@@ -624,12 +654,9 @@ int main(int argc, const char *argv[]) {
   }
 
   //
-  // initial log & stats
+  // initial log
   //
   std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << " dt=" << dt << " numCycles=" << numCycles << std::endl;
-  std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ*SZ*SZ)*100. << "%"
-                        << " avgParticlePerBucket=" << Float(Ncreate)/std::pow(Float(ParticlesIndex::NSpaceSlots),3)
-                        << std::endl;
 
   //
   // evolve
