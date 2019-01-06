@@ -69,11 +69,11 @@ namespace Detail {
       : sqrtNewtonRaphson(x, 0.5 * (curr + x / curr), curr);
   }
 
-  static double constexpr cbrtNewtonRaphson(double x, double curr, double prev) {
-    return curr == prev
-      ? curr
-      : cbrtNewtonRaphson(x, curr - (curr*curr*curr - x)/(3*curr*curr), curr);
-  }
+  //static double constexpr cbrtNewtonRaphson(double x, double curr, double prev) {
+  //  return curr == prev
+  //    ? curr
+  //    : cbrtNewtonRaphson(x, curr - (curr*curr*curr - x)/(3*curr*curr), curr);
+  //}
 }
 
 static double constexpr sqrt(double x) {
@@ -82,20 +82,20 @@ static double constexpr sqrt(double x) {
     : std::numeric_limits<double>::quiet_NaN();
 }
 
-static double constexpr cbrt(double x) {
-  return x >= 0 && x < std::numeric_limits<double>::infinity()
-    ? Detail::cbrtNewtonRaphson(x, x, 0)
-    : std::numeric_limits<double>::quiet_NaN();
-}
-
-unsigned constexpr lim1(unsigned i) {
-  return i >= 1 ? i : 1;
-}
+//static double constexpr cbrt(double x) {
+//  return x >= 0 && x < std::numeric_limits<double>::infinity()
+//    ? Detail::cbrtNewtonRaphson(x, x, 0)
+//    : std::numeric_limits<double>::quiet_NaN();
+//}
 
 static Float constexpr temperatureToEnergy(Float T) {return k*T;}
 static Float constexpr energyToTemperature(Float E) {return E/k;}
 
 }; // constexpr_funcs
+
+unsigned lim1(unsigned i) {
+  return i >= 1 ? i : 1;
+}
 
 namespace xasm {
 
@@ -139,8 +139,8 @@ static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to ov
 static constexpr Float particlesPerBucket = 1.; // average number of particles per bucket. Performance drops when the number is >1 (like 2)
 static constexpr Float m = 6.646476410e-27; // He atomic mass in kg
 static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
-static constexpr Float SZa[3] = {4e-6,1e-7,1e-7};    // size of the box, when the particles are outside this box they reflect to the other side
-static constexpr Float SZ(int i) {return SZa[i-1];}
+static Float SZa[3] = {4e-6,1e-7,1e-7};    // size of the box, when the particles are outside this box they reflect to the other side
+static Float SZ(int i) {return SZa[i-1];}
 static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 static constexpr unsigned numCycles = 4000;
@@ -252,15 +252,20 @@ public: // methods
 class ParticlesIndex { // index of particles in XYZ slot space
 public:
   typedef std::list<Particle*> Slot;
-  static constexpr unsigned NSpaceSlots[3] = {constexpr_funcs::lim1((unsigned)(SZ(X)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
-                                              constexpr_funcs::lim1((unsigned)(SZ(Y)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
-                                              constexpr_funcs::lim1((unsigned)(SZ(Z)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))};
+  unsigned NSpaceSlots[3];
+  unsigned nSlots1mulNSlots2;
   // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
 private:
-  std::array<std::array<std::array<Slot,NSpaceSlots[2]>,NSpaceSlots[1]>,NSpaceSlots[0]> index;
+  std::vector<Slot> index;
 public:
-  ParticlesIndex() {
+  ParticlesIndex()
+  : NSpaceSlots{lim1((unsigned)(SZ(X)/std::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
+                lim1((unsigned)(SZ(Y)/std::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
+                lim1((unsigned)(SZ(Z)/std::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))},
+    nSlots1mulNSlots2(NSpaceSlots[1]*NSpaceSlots[2])
+  {
     std::cout << "ParticlesIndex: NSpaceSlots={" << NSpaceSlots[0] << "," << NSpaceSlots[1] << "," << NSpaceSlots[2] << "}" << std::endl;
+    index.resize(NSpaceSlots[0]*NSpaceSlots[1]*NSpaceSlots[2]);
   }
   auto& get() {return index;}
   void add(const Vec3 &pos, Particle *p) {
@@ -287,9 +292,10 @@ public:
     del(findSlot(p), p);
   }
   Slot& findSlot(const Particle *p) {return findSlot(p->pos);}
-  Slot& findSlot(const Vec3 &pos) {return index[coordToSlot(X, pos(X))][coordToSlot(Y, pos(Y))][coordToSlot(Z, pos(Z))];}
+  Slot& findSlot(const Vec3 &pos) {return getSlot(coordToSlot(X, pos(X)), coordToSlot(Y, pos(Y)), coordToSlot(Z, pos(Z)));}
+  Slot& getSlot(unsigned ix, unsigned iy, unsigned iz) {return index[ix*nSlots1mulNSlots2+iy*NSpaceSlots[2]+iz];}
 private:
-  static unsigned coordToSlot(unsigned ci, Float c) {
+  unsigned coordToSlot(unsigned ci, Float c) {
     return c / (SZ(ci)/NSpaceSlots[ci-1]);
   }
 }; // ParticlesIndex
@@ -299,25 +305,25 @@ static ParticlesIndex particlesIndex;
 //
 // Helper classes: iterators
 //
-template<const unsigned Max[3], typename Fn>
+template<typename Fn>
 static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
   for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
         {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
           {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
-    if (0 <= ix+dix && ix+dix < (int)Max[0] && 0 <= iy+diy && iy+diy < (int)Max[1] && 0 <= iz+diz && iz+diz < (int)Max[2])
+    if (0 <= ix+dix && ix+dix < (int)particlesIndex.NSpaceSlots[0] && 0 <= iy+diy && iy+diy < (int)particlesIndex.NSpaceSlots[1] && 0 <= iz+diz && iz+diz < (int)particlesIndex.NSpaceSlots[2])
       fn(ix+dix, iy+diy, iz+diz);
 }
 
 template<typename Fn>
 static void IterateThroughOverlaps(Fn &&fn) {
-  for (unsigned ix = 0; ix < ParticlesIndex::NSpaceSlots[0]; ix++) {
-    const auto& sx = particlesIndex.get()[ix];
-    for (unsigned iy = 0; iy < ParticlesIndex::NSpaceSlots[1]; iy++) {
-      const auto& sy = sx[iy];
-      for (unsigned iz = 0; iz < ParticlesIndex::NSpaceSlots[2]; iz++) {
-        const auto& sz = sy[iz];
+  ParticlesIndex::Slot *sx = &particlesIndex.get()[0];
+  for (unsigned ix = 0; ix < particlesIndex.NSpaceSlots[0]; ix++, sx += particlesIndex.nSlots1mulNSlots2) {
+    ParticlesIndex::Slot *sy = sx;
+    for (unsigned iy = 0; iy < particlesIndex.NSpaceSlots[1]; iy++, sy += particlesIndex.NSpaceSlots[2]) {
+      ParticlesIndex::Slot *sz = sy;
+      for (unsigned iz = 0; iz < particlesIndex.NSpaceSlots[2]; iz++, sz++) {
         // process all pairs: same bucket
-        for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
+        for (auto it1 = sz->begin(), ite = sz->end(); it1 != ite; it1++) {
           auto p1 = *it1;
           for (auto it2 = it1; ++it2 != ite;) {
             auto p2 = *it2;
@@ -326,9 +332,9 @@ static void IterateThroughOverlaps(Fn &&fn) {
           }
         } // same bucket
         // process all pairs: cross-bucket
-        IterateCellNeighborsForward<ParticlesIndex::NSpaceSlots>(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
-          auto &slot2 = particlesIndex.get()[ix][iy][iz];
-          for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
+        IterateCellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
+          auto &slot2 = particlesIndex.getSlot(ix, iy, iz);
+          for (auto it1 = sz->begin(), it1e = sz->end(); it1 != it1e; it1++) {
             auto p1 = *it1;
             for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
               auto p2 = *it2;
@@ -688,7 +694,7 @@ int main(int argc, const char *argv[]) {
   // checks
   //
   for (auto c : {X,Y,Z})
-    assert(2*particleRadius < Float(SZ(c))/ParticlesIndex::NSpaceSlots[c-1]); // particle diameter should be < index slot size, because otherwise collision detection
+    assert(2*particleRadius < Float(SZ(c))/particlesIndex.NSpaceSlots[c-1]); // particle diameter should be < index slot size, because otherwise collision detection
                                                                               // needs to look out more than in 1 slot away which makes it impractical
   //
   // params & stats
@@ -699,7 +705,7 @@ int main(int argc, const char *argv[]) {
                          << " numCycles=" << numCycles
                          << std::endl;
   std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
-                        << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
+                        << " avgParticlePerBucket=" << Float(Ncreate)/(particlesIndex.NSpaceSlots[0]*particlesIndex.NSpaceSlots[1]*particlesIndex.NSpaceSlots[2])
                         << " P/Patm (at Troom)=" << ((Ncreate/Na)*R*Troom/(SZ(X)*SZ(Y)*SZ(Z))/Patm)
                         << std::endl;
 
