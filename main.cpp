@@ -164,7 +164,8 @@ static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particl
 // Stats of the run
 //
 static unsigned statsNumBucketMoves = 0;
-static unsigned statsNumCollisions = 0;
+static unsigned statsNumCollisionsPP = 0;    // particle-particle collisions
+static unsigned statsNumCollisionsPW = 0;
 
 //
 // Classes
@@ -200,10 +201,12 @@ public: // methods
       if (partCoord < wall1) {
         partCoord = wall1 + (wall1-partCoord);
         partVelocity = -partVelocity;
+        statsNumCollisionsPW++;
       }
       if (partCoord > wall2) {
         partCoord = wall2 - (partCoord-wall2);
         partVelocity = -partVelocity;
+        statsNumCollisionsPW++;
       }
     };
     // move the point
@@ -662,11 +665,11 @@ static void evolvePhysically() {
       p.move(dt);
     t += dt;
     // iter-particle collisions
-    auto prevStatsNumCollisions = statsNumCollisions;
+    auto prevStatsNumCollisions = statsNumCollisionsPP;
     IterateThroughOverlaps([](Particle *p1, Particle *p2) {
       assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
       p1->collide(*p2);
-      statsNumCollisions++;
+      statsNumCollisionsPP++;
     });
 #if DBG_SAVE_IMAGES
     imageSaver.save(t, 5/*digits in time*/);
@@ -675,7 +678,8 @@ static void evolvePhysically() {
     uint64_t cpuCyclesNow = xasm::getCpuCycles();
     std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
               << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
-              << " statsNumCollisions=" << statsNumCollisions << " (+" << (statsNumCollisions-prevStatsNumCollisions) << ")"
+              << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
+              << " statsNumCollisionsPW=" << statsNumCollisionsPW
               << " statsNumBucketMoves=" << statsNumBucketMoves
               << std::endl;
   }
@@ -736,7 +740,7 @@ int main(int argc, const char *argv[]) {
   // final log & stats
   //
   std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
-  std::cout << "stats(fini): collisionsPerParticle=" << Float(statsNumCollisions)/N << std::endl;
+  std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N << std::endl;
 
   //
   // output
