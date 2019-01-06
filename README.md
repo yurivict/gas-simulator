@@ -1,6 +1,6 @@
 # gas-simulator
 
-Gas simulator for the puroses of research into gas particles velocity distribution.
+Gas simulator for the purposes of research into gas particles velocity distribution.
 
 ### Dependencies
 * GNU Make (build)
