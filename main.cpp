@@ -23,13 +23,35 @@
 
 #include "Vec3.h"
 
+//
 // types
+//
+
 typedef double Float;
 
 #define DBG_SAVE_IMAGES 0    // save images representing evolution of one particluar area
 #define DBG_TRACK_PARTICLE 0 // track one particle
 
-namespace math_constexpr {
+//
+// physics constants and laws
+//
+
+static constexpr Float Na = 6.022e+23;  // Avogadro constant
+static constexpr Float R = 8.3144598;   // 8.3144598(48) in kg m² s⁻² K−1 mol−1 , see https://en.wikipedia.org/wiki/Gas_constant
+static constexpr Float k = R/Na;        // Boltzmann constant, see https://en.wikipedia.org/wiki/Boltzmann_constant
+static constexpr Float Troom = 293.15;  // room temperature in Kelvins: 20°C=293.15K
+static constexpr Float Patm = 101325;   // 101.325 kPa
+
+// quick gas computations:
+// Vmol(0°C)  = 1mol*R*T=273.15K/101325 ≈ 0.0224m³ = 22.4dm³
+// Vmol(20°C) = 1mol*R*T=293.15K/101325 ≈ 0.0241m³ = 24.1dm³
+// V(1mil, 20°C) = (n=1mil/Na)RT/Patm ≈ 0.342e-6 (~0.3μm)
+
+//
+// helper functions
+//
+
+namespace constexpr_funcs {
 
 // borrowed from the answer in https://stackoverflow.com/questions/23781506/compile-time-computing-of-number-of-bits-needed-to-encode-n-different-states/23795363
 constexpr unsigned floorlog2(unsigned x) {
@@ -40,16 +62,27 @@ constexpr unsigned ceillog2(unsigned x) {
   return x == 1 ? 0 : floorlog2(x - 1) + 1;
 }
 
-namespace Detail
-{
-  double constexpr cbrtNewtonRaphson(double x, double curr, double prev) {
+namespace Detail {
+  static double constexpr sqrtNewtonRaphson(double x, double curr, double prev) {
+    return curr == prev
+      ? curr
+      : sqrtNewtonRaphson(x, 0.5 * (curr + x / curr), curr);
+  }
+
+  static double constexpr cbrtNewtonRaphson(double x, double curr, double prev) {
     return curr == prev
       ? curr
       : cbrtNewtonRaphson(x, curr - (curr*curr*curr - x)/(3*curr*curr), curr);
   }
 }
 
-double constexpr cbrt(double x) {
+static double constexpr sqrt(double x) {
+  return x >= 0 && x < std::numeric_limits<double>::infinity()
+    ? Detail::sqrtNewtonRaphson(x, x, 0)
+    : std::numeric_limits<double>::quiet_NaN();
+}
+
+static double constexpr cbrt(double x) {
   return x >= 0 && x < std::numeric_limits<double>::infinity()
     ? Detail::cbrtNewtonRaphson(x, x, 0)
     : std::numeric_limits<double>::quiet_NaN();
@@ -59,7 +92,36 @@ unsigned constexpr lim1(unsigned i) {
   return i >= 1 ? i : 1;
 }
 
-}; // math_constexpr
+static Float constexpr temperatureToEnergy(Float T) {return k*T;}
+static Float constexpr energyToTemperature(Float E) {return E/k;}
+
+}; // constexpr_funcs
+
+namespace xasm {
+
+  static inline uint64_t getCpuCycles(){
+    unsigned int lo,hi;
+    __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
+    return ((uint64_t)hi << 32) | lo;
+  }
+
+}; // xasm
+
+static void formatUInt64(uint64_t x, std::ostream &os) {
+  if (x >= 1000) {
+    formatUInt64(x/uint64_t(1000), os);
+    os << ",";
+    os << std::setw(3) << std::setfill('0') << x%1000;
+  } else {
+    os << x;
+  }
+}
+
+static std::string formatUInt64(uint64_t x) {
+  std::ostringstream ss;
+  formatUInt64(x, ss);
+  return ss.str();
+}
 
 //
 // relevant physics laws
@@ -67,40 +129,31 @@ unsigned constexpr lim1(unsigned i) {
 
 // Ideal gas law: https://en.wikipedia.org/wiki/Ideal_gas_law
 // PV = nRT    // n is number of moles
-
-//
-// physics constants
-//
-
-static constexpr Float Na = 6.022e+23;  // Avogadro constant
-static constexpr Float R = 8.3144598;   // 8.3144598(48) in kg m² s⁻² K−1 mol−1 , see https://en.wikipedia.org/wiki/Gas_constant
-static constexpr Float Troom = 293.15;  // room temperature in Kelvins: 20°C=293.15K
-static constexpr Float Patm = 101325;   // 101.325 kPa
-
-// quick gas computations:
-// Vmol(0°C)  = 1mol*R*T=273.15K/101325 ≈ 0.0224m³ = 22.4dm³
-// Vmol(20°C) = 1mol*R*T=293.15K/101325 ≈ 0.0241m³ = 24.1dm³
-// V(1mil, 20°C) = (n=1mil/Na)RT/Patm ≈ 0.342e-6 (~0.3μm)
+// E = kT      // relation between the average kinetic energy and temperature
 
 //
 // params
 //
 static constexpr unsigned N = 1000000;
 static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
-static constexpr Float particlesPerBucket = 2.; // average number of particles per bucket. Performance drops when the number is >5
+static constexpr Float particlesPerBucket = 1.; // average number of particles per bucket. Performance drops when the number is >1 (like 2)
+static constexpr Float m = 6.646476410e-27; // He atomic mass in kg
 static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
-static constexpr Float SZa[3] = {1.,1.,1.};    // size of the box, when the particles are outside this box they reflect to the other side
+static constexpr Float SZa[3] = {4e-6,1e-7,1e-7};    // size of the box, when the particles are outside this box they reflect to the other side
 static constexpr Float SZ(int i) {return SZa[i-1];}
+static constexpr Float particleRadius = 140e-12; // He atomic radius
+static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 static constexpr unsigned numCycles = 4000;
-static constexpr Float dt = 0.00001;
-static constexpr Float initE1 = 1.9;
-static constexpr Float initE2 = 2.1;
+static constexpr Float Teff = Troom;  // effective temperature (same as default temperature)
+static constexpr Float Vthermal = constexpr_funcs::sqrt((k*Teff)*2/m);  // thermal velocity
+static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a negligent number of particles XXX TODO 5. should be percentage estimate based
+static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
+static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
+static constexpr Float initE1 = constexpr_funcs::temperatureToEnergy(Troom)*0.95;
+static constexpr Float initE2 = constexpr_funcs::temperatureToEnergy(Troom)*1.05;
 static constexpr std::array<Float,2> energyLimits = {{0., 2.*initE2}}; // consider energies up to (..energyUpTo)
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
-static constexpr Float m = 1.; // nominal mass, it shouldn't matter here
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
-static constexpr Float particleRadius = 0.003; //SZ/ParticlesIndex::NSpaceSlots/15.; // XXX arbitrary coefficient
-static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 #if DBG_SAVE_IMAGES
 static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaY = {{0.45,0.55}};
@@ -199,12 +252,12 @@ public: // methods
 class ParticlesIndex { // index of particles in XYZ slot space
 public:
   typedef std::list<Particle*> Slot;
-  static constexpr unsigned NSpaceSlots[3] = {math_constexpr::lim1((unsigned)(SZ(X)/math_constexpr::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
-                                              math_constexpr::lim1((unsigned)(SZ(Y)/math_constexpr::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
-                                              math_constexpr::lim1((unsigned)(SZ(Z)/math_constexpr::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))};
+  static constexpr unsigned NSpaceSlots[3] = {constexpr_funcs::lim1((unsigned)(SZ(X)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
+                                              constexpr_funcs::lim1((unsigned)(SZ(Y)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
+                                              constexpr_funcs::lim1((unsigned)(SZ(Z)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))};
   // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
 private:
-  std::array<std::array<std::array<Slot,NSpaceSlots[0]>,NSpaceSlots[1]>,NSpaceSlots[2]> index;
+  std::array<std::array<std::array<Slot,NSpaceSlots[2]>,NSpaceSlots[1]>,NSpaceSlots[0]> index;
 public:
   ParticlesIndex() {
     std::cout << "ParticlesIndex: NSpaceSlots={" << NSpaceSlots[0] << "," << NSpaceSlots[1] << "," << NSpaceSlots[2] << "}" << std::endl;
@@ -595,6 +648,7 @@ static void evolvePairwiseVelocity() {
 }
 
 static void evolvePhysically() {
+  uint64_t cpuCycles0 = xasm::getCpuCycles();
 #if DBG_SAVE_IMAGES
   imageSaver.save(0./*t*/, 5/*digits in time*/);
 #endif
@@ -616,7 +670,12 @@ static void evolvePhysically() {
     imageSaver.save(t, 5/*digits in time*/);
 #endif
     // print tick and stats
-    std::cout << "tick: evolvePhysically: t=" << t << " statsNumCollisions=" << statsNumCollisions << " (+" << (statsNumCollisions-prevStatsNumCollisions) << ") statsNumBucketMoves=" << statsNumBucketMoves << std::endl;
+    uint64_t cpuCyclesNow = xasm::getCpuCycles();
+    std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
+              << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
+              << " statsNumCollisions=" << statsNumCollisions << " (+" << (statsNumCollisions-prevStatsNumCollisions) << ")"
+              << " statsNumBucketMoves=" << statsNumBucketMoves
+              << std::endl;
   }
 }
 
@@ -632,11 +691,16 @@ int main(int argc, const char *argv[]) {
     assert(2*particleRadius < Float(SZ(c))/ParticlesIndex::NSpaceSlots[c-1]); // particle diameter should be < index slot size, because otherwise collision detection
                                                                               // needs to look out more than in 1 slot away which makes it impractical
   //
-  // stats
+  // params & stats
   //
 
+  std::cout << "params(init): dt=" << dt
+                         << " Vthermal=" << Vthermal
+                         << " numCycles=" << numCycles
+                         << std::endl;
   std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
                         << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
+                        << " P/Patm (at Troom)=" << ((Ncreate/Na)*R*Troom/(SZ(X)*SZ(Y)*SZ(Z))/Patm)
                         << std::endl;
 
   //
@@ -656,7 +720,7 @@ int main(int argc, const char *argv[]) {
   //
   // initial log
   //
-  std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << " dt=" << dt << " numCycles=" << numCycles << std::endl;
+  std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << " numCycles=" << numCycles << std::endl;
 
   //
   // evolve
