@@ -258,12 +258,14 @@ public:
   static constexpr unsigned NSpaceSlots[3] = {constexpr_funcs::lim1((unsigned)(SZ(X)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
                                               constexpr_funcs::lim1((unsigned)(SZ(Y)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
                                               constexpr_funcs::lim1((unsigned)(SZ(Z)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))};
+  static constexpr Float SZdivNSpaceSlots[3] = {SZa[0]/NSpaceSlots[0], SZa[1]/NSpaceSlots[1], SZa[2]/NSpaceSlots[2]};
   // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
 private:
   std::array<std::array<std::array<Slot,NSpaceSlots[2]>,NSpaceSlots[1]>,NSpaceSlots[0]> index;
 public:
   ParticlesIndex() {
-    std::cout << "ParticlesIndex: NSpaceSlots={" << NSpaceSlots[0] << "," << NSpaceSlots[1] << "," << NSpaceSlots[2] << "}" << std::endl;
+    std::cout << "ParticlesIndex: NSpaceSlots={" << NSpaceSlots[0] << "," << NSpaceSlots[1] << "," << NSpaceSlots[2] << "}"
+              << " (total=" << formatUInt64(NSpaceSlots[0]*NSpaceSlots[1]*NSpaceSlots[2]) << ")" << std::endl;
   }
   auto& get() {return index;}
   void add(const Vec3 &pos, Particle *p) {
@@ -293,7 +295,7 @@ public:
   Slot& findSlot(const Vec3 &pos) {return index[coordToSlot(X, pos(X))][coordToSlot(Y, pos(Y))][coordToSlot(Z, pos(Z))];}
 private:
   static unsigned coordToSlot(unsigned ci, Float c) {
-    return c / (SZ(ci)/NSpaceSlots[ci-1]);
+    return c/SZdivNSpaceSlots[ci-1];
   }
 }; // ParticlesIndex
 
@@ -645,51 +647,103 @@ public:
 // Evolve
 //
 
-static void evolvePairwiseVelocity() {
-  for (unsigned i = 0; i < Pairwise_RandomizeRounds; i++) {
-    auto pp = rg.particlePair();
-    transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
+class Evolver {
+public:
+  static void evolvePairwiseVelocity() {
+    for (unsigned i = 0; i < Pairwise_RandomizeRounds; i++) {
+      auto pp = rg.particlePair();
+      transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
+    }
   }
-}
-
-static void evolvePhysically() {
-  uint64_t cpuCycles0 = xasm::getCpuCycles();
+  static void evolvePhysically() {
+    uint64_t cpuCycles0 = xasm::getCpuCycles();
 #if DBG_SAVE_IMAGES
-  imageSaver.save(0./*t*/, 5/*digits in time*/);
+    imageSaver.save(0./*t*/, 5/*digits in time*/);
 #endif
-  // evolve
-  Float t = 0.;
-  for (unsigned cycle = 0; cycle < numCycles; cycle++) {
-    // move
+    // evolve
+    Float t = 0.;
+    for (unsigned cycle = 0; cycle < numCycles; cycle++) {
+      //
+      // move
+      //
+
+      moveIterateByParticle();
+      //moveIterateByBucket();
+
+      //for (auto &sx : particlesIndex.get())
+      //  for (auto &sy : sx)
+      //    for (auto sz : sy)
+      //      for (auto p : sz)
+      //        p->move(dt);
+      //auto ii = [=](ParticlesIndex::Slot::iterator it, ParticlesIndex::Slot::iterator ite) {
+      //  auto p = *it;
+      //  it++;
+      //  if (it != ite)
+      //    ii(it, ite);
+      //  p->move(dt);
+      //};
+      t += dt;
+
+      //
+      // iter-particle collisions
+      //
+      auto prevStatsNumCollisions = statsNumCollisionsPP;
+      IterateThroughOverlaps([](Particle *p1, Particle *p2) {
+        assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
+        p1->collide(*p2);
+        statsNumCollisionsPP++;
+      });
+#if DBG_SAVE_IMAGES
+      imageSaver.save(t, 5/*digits in time*/);
+#endif
+      // print tick and stats
+      uint64_t cpuCyclesNow = xasm::getCpuCycles();
+      std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
+                << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
+                << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
+                << " statsNumCollisionsPW=" << statsNumCollisionsPW
+                << " statsNumBucketMoves=" << statsNumBucketMoves
+                << std::endl;
+    }
+  }
+private:
+  static void moveIterateByParticle() { // faster when occupancy percentage is low
     for (auto &p : particles)
       p.move(dt);
-    t += dt;
-    // iter-particle collisions
-    auto prevStatsNumCollisions = statsNumCollisionsPP;
-    IterateThroughOverlaps([](Particle *p1, Particle *p2) {
-      assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
-      p1->collide(*p2);
-      statsNumCollisionsPP++;
-    });
-#if DBG_SAVE_IMAGES
-    imageSaver.save(t, 5/*digits in time*/);
-#endif
-    // print tick and stats
-    uint64_t cpuCyclesNow = xasm::getCpuCycles();
-    std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
-              << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
-              << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
-              << " statsNumCollisionsPW=" << statsNumCollisionsPW
-              << " statsNumBucketMoves=" << statsNumBucketMoves
-              << std::endl;
   }
-}
+  static void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
+    auto p = *it;
+    it++;
+    if (it != ite)
+      moveIterateByBucketHelper(it, ite);
+    p->move(dt);
+  }
+  static void moveIterateByBucket() { // slower when occupancy percentage is low
+    // omp-based
+    //unsigned i, ie = particles.size();
+    //#pragma omp parallel for
+    //for (i = 0; i < ie; i++)
+    //  particles[i].move(dt);
+
+    for (auto slot = &particlesIndex.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
+      if (!slot->empty()) {
+        moveIterateByBucketHelper(slot->begin(), slot->end());
+        //sz += slot->size();
+      }
+  }
+}; // Evolver
 
 //
 // MAIN
 //
 
 int main(int argc, const char *argv[]) {
+  //
+  // cycles
+  //
+
+  auto cpuCycles0 = xasm::getCpuCycles();
+
   //
   // checks
   //
@@ -732,9 +786,9 @@ int main(int argc, const char *argv[]) {
   // evolve
   //
   if (0)
-    evolvePairwiseVelocity();
+    Evolver::evolvePairwiseVelocity();
   if (1)
-    evolvePhysically();
+    Evolver::evolvePhysically();
 
   //
   // final log & stats
@@ -765,5 +819,11 @@ int main(int argc, const char *argv[]) {
     file.close();
     std::cout << "done serializing to " << fname.str() << " ..." << std::endl;
   }
+
+  //
+  // cycles
+  //
+  auto cpuCyclesEnd = xasm::getCpuCycles();
+  std::cout << "consumed cycles: " << formatUInt64(cpuCyclesEnd-cpuCycles0) << " {now at " << formatUInt64(cpuCyclesEnd) << "}" << std::endl;
 }
 
