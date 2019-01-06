@@ -299,12 +299,12 @@ static ParticlesIndex particlesIndex;
 //
 // Helper classes: iterators
 //
-template<const unsigned Max[3], typename Fn>
+template<typename Fn>
 static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
   for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
         {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
           {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
-    if (0 <= ix+dix && ix+dix < (int)Max[0] && 0 <= iy+diy && iy+diy < (int)Max[1] && 0 <= iz+diz && iz+diz < (int)Max[2])
+    if (0 <= ix+dix && ix+dix < (int)ParticlesIndex::NSpaceSlots[0] && 0 <= iy+diy && iy+diy < (int)ParticlesIndex::NSpaceSlots[1] && 0 <= iz+diz && iz+diz < (int)ParticlesIndex::NSpaceSlots[2])
       fn(ix+dix, iy+diy, iz+diz);
 }
 
@@ -326,7 +326,7 @@ static void IterateThroughOverlaps(Fn &&fn) {
           }
         } // same bucket
         // process all pairs: cross-bucket
-        IterateCellNeighborsForward<ParticlesIndex::NSpaceSlots>(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
+        IterateCellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
           auto &slot2 = particlesIndex.get()[ix][iy][iz];
           for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
             auto p1 = *it1;
