@@ -309,8 +309,11 @@ static ParticlesIndex particlesIndex;
 //
 // Helper classes: iterators
 //
+
+namespace Iterate {
+
 template<typename Fn>
-static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
+static void CellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
   for (auto [dix,diy,diz] : std::array<std::array<int,3>,13>( // all forward-oriented neighboring buckets: (3^3-1)/2 = 13
         {{{{ 0, 0,+1}}, {{ 0,+1,-1}}, {{ 0,+1, 0}}, {{ 0,+1,+1}},
           {{+1, 0,-1}}, {{+1, 0, 0}}, {{+1, 0,+1}}, {{+1,-1,-1}}, {{+1,-1, 0}}, {{+1,-1,+1}}, {{+1,+1,-1}}, {{+1,+1, 0}}, {{+1,+1,+1}}}}))
@@ -321,7 +324,7 @@ static void IterateCellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
 }
 
 template<typename Fn>
-static void IterateThroughOverlaps(Fn &&fn) {
+static void ThroughOverlapsSer(Fn &&fn) {
   for (unsigned ix = 0; ix < ParticlesIndex::NSpaceSlots[0]; ix++) {
     const auto& sx = particlesIndex.get()[ix];
     for (unsigned iy = 0; iy < ParticlesIndex::NSpaceSlots[1]; iy++) {
@@ -338,7 +341,7 @@ static void IterateThroughOverlaps(Fn &&fn) {
           }
         } // same bucket
         // process all pairs: cross-bucket
-        IterateCellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
+        CellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
           auto &slot2 = particlesIndex.get()[ix][iy][iz];
           for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
             auto p1 = *it1;
@@ -353,6 +356,13 @@ static void IterateThroughOverlaps(Fn &&fn) {
     }
   }
 }
+
+template<typename Fn>
+static void ThroughOverlaps(Fn &&fn) {
+  ThroughOverlapsSer(fn);
+}
+
+}; // Iterate
 
 //
 // Separate methods
@@ -474,7 +484,7 @@ static void generateParticles() {
     hadOverlaps = false;
     // find overlaps
     std::set<Particle*> overlaps;
-    IterateThroughOverlaps([&overlaps](Particle *p1, Particle *p2) {
+    Iterate::ThroughOverlaps([&overlaps](Particle *p1, Particle *p2) {
       overlaps.insert(p2);
     });
     // regenerate collided particles
@@ -686,7 +696,7 @@ public:
       // iter-particle collisions
       //
       auto prevStatsNumCollisions = statsNumCollisionsPP;
-      IterateThroughOverlaps([](Particle *p1, Particle *p2) {
+      Iterate::ThroughOverlaps([](Particle *p1, Particle *p2) {
         assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
         p1->collide(*p2);
         statsNumCollisionsPP++;
