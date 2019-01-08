@@ -149,7 +149,7 @@ static constexpr Float SZa[3] = {4e-6,1e-7,1e-7};    // size of the box, when th
 static constexpr Float SZ(int i) {return SZa[i-1];}
 static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
-static constexpr unsigned numCycles = 4000;
+static unsigned numCycles;
 static constexpr Float Teff = Troom;  // effective temperature (same as default temperature)
 static constexpr Float Vthermal = constexpr_funcs::sqrt((k*Teff)*2/m);  // thermal velocity
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a negligent number of particles XXX TODO 5. should be percentage estimate based
@@ -777,6 +777,21 @@ int mainGuarded(int argc, char *argv[]) {
   auto cpuCycles0 = xasm::getCpuCycles();
 
   //
+  // parse arguments
+  //
+
+  cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
+  options.add_options()
+    ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
+    ("c,cycles",  "Set how many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
+    ;
+
+  auto result = options.parse(argc, argv);
+  bool optRestart = result.count("restart") > 0;
+  std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
+  numCycles = result["cycles"].as<unsigned>();
+
+  //
   // checks
   //
   for (auto c : {X,Y,Z})
@@ -794,19 +809,6 @@ int mainGuarded(int argc, char *argv[]) {
                         << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
                         << " P/Patm (at Troom)=" << ((Ncreate/Na)*R*Troom/(SZ(X)*SZ(Y)*SZ(Z))/Patm)
                         << std::endl;
-
-  //
-  // parse arguments
-  //
-
-  cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
-  options.add_options()
-    ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
-    ;
-
-  auto result = options.parse(argc, argv);
-  bool optRestart = result.count("restart") > 0;
-  std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
 
   //
   // generate or restart
