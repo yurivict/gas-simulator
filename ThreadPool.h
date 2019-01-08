@@ -73,7 +73,7 @@ protected:
 
       { // done
         std::unique_lock<std::mutex> l(lock);
-        condVarJobAdded.notify_one();
+        condVarJobFinished.notify_one();
       }
     }
   }

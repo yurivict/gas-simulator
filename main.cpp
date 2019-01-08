@@ -720,11 +720,10 @@ public:
 private:
   void moveIterateByParticle() { // faster when occupancy percentage is low
 #if USE_PARALLELISM
-    if (particles.size() >= NCPU) {
+    if (particles.size() >= NCPU)
       moveIterateByParticlePar();
-    } else {
+    else
       moveIterateByParticleSeq();
-    }
 #else
     moveIterateByParticleSeq();
 #endif
@@ -732,8 +731,6 @@ private:
 #if USE_PARALLELISM
   void moveIterateByParticlePar() {
     unsigned ie = particles.size(), di = ie / NCPU;
-    assert(di > 0);
-    std::mutex mx;
     for (unsigned idx1 = 0, cpu = 0; idx1 < ie; cpu++) {
       unsigned idx2 = idx1 + di;
       if (idx2 > ie)
