@@ -21,6 +21,11 @@
 
 #include <nlohmann/json.hpp>
 
+#if USE_PARALLELISM
+#include <thread>
+#include "ThreadPool.h"
+#endif
+
 #include "Vec3.h"
 
 //
@@ -648,14 +653,20 @@ public:
 //
 
 class Evolver {
+#if USE_PARALLELISM
+  ThreadPool threadPool;
+#endif
 public:
+#if USE_PARALLELISM
+  Evolver() : threadPool(NCPU) { }
+#endif
   static void evolvePairwiseVelocity() {
     for (unsigned i = 0; i < Pairwise_RandomizeRounds; i++) {
       auto pp = rg.particlePair();
       transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
     }
   }
-  static void evolvePhysically() {
+  void evolvePhysically() {
     uint64_t cpuCycles0 = xasm::getCpuCycles();
 #if DBG_SAVE_IMAGES
     imageSaver.save(0./*t*/, 5/*digits in time*/);
@@ -707,24 +718,50 @@ public:
     }
   }
 private:
-  static void moveIterateByParticle() { // faster when occupancy percentage is low
+  void moveIterateByParticle() { // faster when occupancy percentage is low
+#if USE_PARALLELISM
+    if (particles.size() >= NCPU) {
+      moveIterateByParticlePar();
+    } else {
+      moveIterateByParticleSeq();
+    }
+#else
+    moveIterateByParticleSeq();
+#endif
+  }
+#if USE_PARALLELISM
+  void moveIterateByParticlePar() {
+    unsigned ie = particles.size(), di = ie / NCPU;
+    assert(di > 0);
+    std::mutex mx;
+    for (unsigned idx1 = 0, cpu = 0; idx1 < ie; cpu++) {
+      unsigned idx2 = idx1 + di;
+      if (idx2 > ie)
+        idx2 = ie;
+      if (cpu == NCPU-1 && idx2 < ie)
+        idx2 = ie;
+      threadPool.doJob([idx1, idx2]() {
+        for (unsigned i = idx1; i < idx2; i++)
+          particles[i].move(dt);
+      }); 
+      idx1 = idx2;
+    }
+    // wait for all tasks to finish
+    threadPool.waitForAll();
+  }
+#endif
+  void moveIterateByParticleSeq() {
     for (auto &p : particles)
       p.move(dt);
   }
-  static void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
+  void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
     auto p = *it;
     it++;
     if (it != ite)
       moveIterateByBucketHelper(it, ite);
     p->move(dt);
   }
-  static void moveIterateByBucket() { // slower when occupancy percentage is low
-    // omp-based
-    //unsigned i, ie = particles.size();
-    //#pragma omp parallel for
-    //for (i = 0; i < ie; i++)
-    //  particles[i].move(dt);
-
+  void moveIterateByBucket() { // slower when occupancy percentage is low
     for (auto slot = &particlesIndex.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
       if (!slot->empty()) {
         moveIterateByBucketHelper(slot->begin(), slot->end());
@@ -786,9 +823,9 @@ int main(int argc, const char *argv[]) {
   // evolve
   //
   if (0)
-    Evolver::evolvePairwiseVelocity();
+    Evolver().evolvePairwiseVelocity();
   if (1)
-    Evolver::evolvePhysically();
+    Evolver().evolvePhysically();
 
   //
   // final log & stats
