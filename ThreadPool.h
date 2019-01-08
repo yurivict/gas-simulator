@@ -12,7 +12,7 @@
 
 class ThreadPool {
 public:
-  ThreadPool(int threads) : shutdown(false) {
+  ThreadPool(int threads) : executing(0), shutdown(false) {
     // Create the specified number of threads
     xthreads.reserve(threads);
     for (int i = 0; i < threads; ++i)
@@ -43,7 +43,7 @@ public:
   void waitForAll() {
     std::unique_lock<std::mutex> l(lock);
 
-    while (!shutdown && !jobs.empty())
+    while (!shutdown && (!jobs.empty() || executing > 0))
       condVarJobFinished.wait(l);
   }
 protected:
@@ -66,6 +66,8 @@ protected:
         THREAD_POOL_DBG(std::cerr << "Thread " << i << " does a job" << std::endl;)
         job = std::move(jobs.front());
         jobs.pop();
+
+        ++executing;
       }
 
       // Do the job without holding any locks
@@ -73,6 +75,7 @@ protected:
 
       { // done
         std::unique_lock<std::mutex> l(lock);
+        --executing;
         condVarJobFinished.notify_one();
       }
     }
@@ -81,6 +84,7 @@ private:
   std::mutex lock;
   std::condition_variable condVarJobAdded;
   std::condition_variable condVarJobFinished;
+  unsigned executing; // how many jobs are currently executing
   bool shutdown;
   std::queue<std::function <void (void)>> jobs;
   std::vector<std::thread> xthreads;
