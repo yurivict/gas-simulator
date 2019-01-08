@@ -9,7 +9,6 @@
 USE_PARALLELISM=1
 
 ifeq ($(USE_PARALLELISM),1)
-  #CXXFLAGS+=-fopenmp
   CXXFLAGS+=-DNCPU=8
   LDFLAGS+=-pthread
   EXT=.par
