@@ -680,19 +680,6 @@ public:
 
       moveIterateByParticle();
       //moveIterateByBucket();
-
-      //for (auto &sx : particlesIndex.get())
-      //  for (auto &sy : sx)
-      //    for (auto sz : sy)
-      //      for (auto p : sz)
-      //        p->move(dt);
-      //auto ii = [=](ParticlesIndex::Slot::iterator it, ParticlesIndex::Slot::iterator ite) {
-      //  auto p = *it;
-      //  it++;
-      //  if (it != ite)
-      //    ii(it, ite);
-      //  p->move(dt);
-      //};
       t += dt;
 
       //
