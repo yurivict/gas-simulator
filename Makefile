@@ -12,12 +12,15 @@ ifeq ($(USE_PARALLELISM),1)
   #CXXFLAGS+=-fopenmp
   CXXFLAGS+=-DNCPU=8
   LDFLAGS+=-pthread
+  EXT=.par
+else
+  EXT=.ser
 endif
 
 CXX=		clang++70
 HEADERS=	ThreadPool.h
 SRCS=		main.cpp
-APP=		sim
+APP=		sim$(EXT)
 IMG_LIB=	-lfreeimage
 COPTS_INLINE=	#-mllvm -inline-threshold=100000
 COPTS_BUILD=	-DUSE_PARALLELISM=$(USE_PARALLELISM)
