@@ -19,6 +19,7 @@
 #include <ctime>
 #include <limits>
 
+#include <cxxopts.hpp>
 #include <nlohmann/json.hpp>
 
 #if USE_PARALLELISM
@@ -768,7 +769,7 @@ private:
 // MAIN
 //
 
-int main(int argc, const char *argv[]) {
+int mainGuarded(int argc, char *argv[]) {
   //
   // cycles
   //
@@ -795,15 +796,28 @@ int main(int argc, const char *argv[]) {
                         << std::endl;
 
   //
+  // parse arguments
+  //
+
+  cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
+  options.add_options()
+    ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
+    ;
+
+  auto result = options.parse(argc, argv);
+  bool optRestart = result.count("restart") > 0;
+  std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
+
+  //
   // generate or restart
   //
-  if (argc == 3 && std::string(argv[1]) == "--restart") {
-    std::cout << "unserializing from " << argv[2] << " ..." << std::endl;
+  if (optRestart) {
+    std::cout << "unserializing from " << optRestartFile << " ..." << std::endl;
     std::ifstream file;
-    file.open(argv[2], std::ifstream::in);
+    file.open(optRestartFile, std::ifstream::in);
     Serializer::unserialize(nlohmann::json::parse(file));
     file.close();
-    std::cout << "done unserializing from " << argv[2] << " ..." << std::endl;
+    std::cout << "done unserializing from " << optRestartFile << " ..." << std::endl;
   } else {
     generateParticles();
   }
@@ -856,5 +870,15 @@ int main(int argc, const char *argv[]) {
   //
   auto cpuCyclesEnd = xasm::getCpuCycles();
   std::cout << "consumed cycles: " << formatUInt64(cpuCyclesEnd-cpuCycles0) << " {now at " << formatUInt64(cpuCyclesEnd) << "}" << std::endl;
+
+  return 0;
 }
 
+int main(int argc, char *argv[]) {
+  try {
+    return mainGuarded(argc, argv);
+  } catch (cxxopts::OptionException ex) {
+    std::cerr << "Option parsing error: " << ex.what() << std::endl;
+    return 1;
+  }
+}
