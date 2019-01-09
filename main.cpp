@@ -21,6 +21,7 @@
 
 #include <cxxopts.hpp>
 #include <nlohmann/json.hpp>
+#include <boost/format.hpp>
 
 #if USE_PARALLELISM
 #include <thread>
@@ -34,9 +35,6 @@
 //
 
 typedef double Float;
-
-#define DBG_SAVE_IMAGES 0    // save images representing evolution of one particluar area
-#define DBG_TRACK_PARTICLE 0 // track one particle
 
 //
 // physics constants and laws
@@ -52,6 +50,12 @@ static constexpr Float Patm = 101325;   // 101.325 kPa
 // Vmol(0°C)  = 1mol*R*T=273.15K/101325 ≈ 0.0224m³ = 22.4dm³
 // Vmol(20°C) = 1mol*R*T=293.15K/101325 ≈ 0.0241m³ = 24.1dm³
 // V(1mil, 20°C) = (n=1mil/Na)RT/Patm ≈ 0.342e-6 (~0.3μm)
+
+#if DBG_TRACK_PARTICLES
+#define DBG_TRACK_PARTICLE_MSG(pno, msg) std::cout << "...[track particle#" << pno << "] " << msg << std::endl;
+#else
+#define DBG_TRACK_PARTICLE_MSG(pno, msg) {/*do nothing*/}
+#endif
 
 //
 // helper functions
@@ -150,6 +154,7 @@ static constexpr Float SZ(int i) {return SZa[i-1];}
 static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 static unsigned numCycles;
+static unsigned cyclePrintPeriod; // how often to print the cycle
 static constexpr Float Teff = Troom;  // effective temperature (same as default temperature)
 static constexpr Float Vthermal = constexpr_funcs::sqrt((k*Teff)*2/m);  // thermal velocity
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a negligent number of particles XXX TODO 5. should be percentage estimate based
@@ -183,14 +188,15 @@ class Particle {
 public: // data
   Vec3  pos;
   Vec3  v;
-#if DBG_TRACK_PARTICLE
-  bool track;
+#if DBG_TRACK_PARTICLES
+  unsigned pno;   // 1-based index
+  bool     track;
 #endif
 public: // methods
   Particle() { }
   Particle(const Vec3 &newPos, const Vec3 &newV)
     : pos(newPos), v(newV)
-#if DBG_TRACK_PARTICLE
+#if DBG_TRACK_PARTICLES
       , track(false)
 #endif
   {
@@ -203,24 +209,33 @@ public: // methods
     return v.len();
   }
   void move(Float dt) {
-    auto collideWall = [](Float &partCoord, Float &partVelocity, Float wall1, Float wall2){
+    auto collideWall = [](Float &partCoord, Float &partVelocity, Float wall1, Float wall2) {
+      bool collided = false;
       if (partCoord < wall1) {
         partCoord = wall1 + (wall1-partCoord);
         partVelocity = -partVelocity;
         statsNumCollisionsPW++;
+        collided = true;
       }
       if (partCoord > wall2) {
         partCoord = wall2 - (partCoord-wall2);
         partVelocity = -partVelocity;
         statsNumCollisionsPW++;
+        collided = true;
       }
+      return collided;
     };
     // move the point
     Vec3 pt(pos(X) + dt*v(X), pos(Y) + dt*v(Y), pos(Z) + dt*v(Z));
     // collide with walls
-    collideWall(pt(X), v(X), 0.+particleRadius,SZ(X)-particleRadius);
-    collideWall(pt(Y), v(Y), 0.+particleRadius,SZ(Y)-particleRadius);
-    collideWall(pt(Z), v(Z), 0.+particleRadius,SZ(Z)-particleRadius);
+    bool collided = false;
+    collided |= collideWall(pt(X), v(X), 0.+particleRadius,SZ(X)-particleRadius);
+    collided |= collideWall(pt(Y), v(Y), 0.+particleRadius,SZ(Y)-particleRadius);
+    collided |= collideWall(pt(Z), v(Z), 0.+particleRadius,SZ(Z)-particleRadius);
+#if DBG_TRACK_PARTICLES
+    if (track && collided)
+      DBG_TRACK_PARTICLE_MSG(pno, "collided with a wall") // TODO report which wall
+#endif
     // move to point
     move(pt);
   }
@@ -251,6 +266,12 @@ public: // methods
     v += dv;
     other.v -= dv;
     //std::cout << "collide < this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
+#if DBG_TRACK_PARTICLES
+    if (track)
+      DBG_TRACK_PARTICLE_MSG(pno, str(boost::format("collided with a particle #%1% (as other particle)") % other.pno))
+    if (other.track)
+      DBG_TRACK_PARTICLE_MSG(other.pno, str(boost::format("collided with a particle #%1% (as current particle)") % pno))
+#endif
   }
   friend std::ostream& operator<<(std::ostream &os, const Particle &p) {
     os << "{pos=" << p.pos << " v=" << p.v << "}";
@@ -376,6 +397,10 @@ void Particle::move(const Vec3 &newPos) {
   if (&slot1 != &slot2) {
     particlesIndex.del(slot1, this);
     particlesIndex.add(slot2, this);
+#if DBG_TRACK_PARTICLES
+    if (track)
+      DBG_TRACK_PARTICLE_MSG(pno, "move between slots " << &slot1 << " -> " << &slot2) // TODO find/keep slot numbers and print them
+#endif
     //std::cout << "MOVE p=" << this << " x=" << x << " y=" << y << " z=" << z << std::endl;
     statsNumBucketMoves++;
   }
@@ -465,7 +490,7 @@ static void generateParticles() {
   for (unsigned i = 0; i < Ncreate; i++)
     particles[i] = genParticleEnergyRange();
 
-#if DBG_TRACK_PARTICLE
+#if DBG_TRACK_PARTICLES
   {
     //Float v = 0.001/*per-frame evolution percentage*/*0.08/*imageAreaX span*/ / 0.00001/*dt*/;
     //particles[0] = Particle(Vec3(0.5,0.5,0.5), Vec3(v,v,0));
@@ -585,7 +610,7 @@ public:
         auto [x,y,zc/*0..199*/] = mapToImage(p);
         //pixel = {255,BYTE(255-zc-56),BYTE(255-zc-56)}; // BGR
         pixel = {0,0,0}; // BGR
-#if DBG_TRACK_PARTICLE
+#if DBG_TRACK_PARTICLES
         if (p.track) {
           pixel = {0,0,255};
           //std::cout << "Display tracked particle @t=" << t << ": " << p << std::endl;
@@ -706,13 +731,15 @@ public:
       imageSaver.save(t, 5/*digits in time*/);
 #endif
       // print tick and stats
-      uint64_t cpuCyclesNow = xasm::getCpuCycles();
-      std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
-                << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
-                << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
-                << " statsNumCollisionsPW=" << statsNumCollisionsPW
-                << " statsNumBucketMoves=" << statsNumBucketMoves
-                << std::endl;
+      if ((cycle+1) % cyclePrintPeriod == 0) {
+        uint64_t cpuCyclesNow = xasm::getCpuCycles();
+        std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
+                  << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
+                  << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
+                  << " statsNumCollisionsPW=" << statsNumCollisionsPW
+                  << " statsNumBucketMoves=" << statsNumBucketMoves
+                  << std::endl;
+      }
     }
   }
 private:
@@ -770,6 +797,13 @@ private:
 //
 
 int mainGuarded(int argc, char *argv[]) {
+
+  if (DBG_TRACK_PARTICLES) {
+    std::cout << "!!!DEBUG CODE!!!" << std::endl;
+    std::cout << "!!!DEBUG CODE!!! (DBG_TRACK_PARTICLES is enabled)" << std::endl;
+    std::cout << "!!!DEBUG CODE!!!" << std::endl;
+  }
+
   //
   // cycles
   //
@@ -783,13 +817,31 @@ int mainGuarded(int argc, char *argv[]) {
   cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
   options.add_options()
     ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
-    ("c,cycles",  "Set how many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
+    ("o,output",  "Write the final particle state into this file (default would be set to particles-{time}.json)", cxxopts::value<std::string>()->default_value(
+      str(boost::format("particles-%1%.json") % std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count())))
+    ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
+    ("p,print",  "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
+#if DBG_TRACK_PARTICLES
+    ("t,track",   "Track particle (1-based)", cxxopts::value<unsigned>())
+#endif
     ;
 
   auto result = options.parse(argc, argv);
   bool optRestart = result.count("restart") > 0;
   std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
+  std::string optOutputFile = result["output"].as<std::string>();
   numCycles = result["cycles"].as<unsigned>();
+  cyclePrintPeriod = result["print"].as<unsigned>();
+#if DBG_TRACK_PARTICLES
+  int optTrack = -1;
+  if (result.count("track") > 0 && result["track"].as<unsigned>() > 0)
+    optTrack = result["track"].as<unsigned>();
+  {
+    unsigned pno = 1;
+    for (auto &p : particles)
+      p.pno = pno++;
+  }
+#endif
 
   //
   // checks
@@ -819,10 +871,16 @@ int mainGuarded(int argc, char *argv[]) {
     file.open(optRestartFile, std::ifstream::in);
     Serializer::unserialize(nlohmann::json::parse(file));
     file.close();
+    for (auto &p : particles)
+      particlesIndex.add(&p);
     std::cout << "done unserializing from " << optRestartFile << " ..." << std::endl;
   } else {
     generateParticles();
   }
+#if DBG_TRACK_PARTICLES
+  if (optTrack != -1)
+    particles[optTrack-1].track = true;
+#endif
 
   //
   // initial log
@@ -841,7 +899,10 @@ int mainGuarded(int argc, char *argv[]) {
   // final log & stats
   //
   std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
-  std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N << std::endl;
+  std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N
+                        << " collisions(PP)=" << formatUInt64(statsNumCollisionsPP)
+                        << " collisions(PW)=" << formatUInt64(statsNumCollisionsPW)
+                        << std::endl;
 
   //
   // output
@@ -857,14 +918,12 @@ int mainGuarded(int argc, char *argv[]) {
   //
 
   {
-    std::ostringstream fname;
-    fname << "particles-" << std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ".json";
-    std::cout << "serializing to " << fname.str() << " ..." << std::endl;
+    std::cout << "serializing to " << optOutputFile << " ..." << std::endl;
     std::ofstream file;
-    file.open(fname.str(), std::ofstream::out);
+    file.open(optOutputFile, std::ofstream::out);
     file << Serializer::serialize();
     file.close();
-    std::cout << "done serializing to " << fname.str() << " ..." << std::endl;
+    std::cout << "done serializing to " << optOutputFile << " ..." << std::endl;
   }
 
   //
