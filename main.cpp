@@ -56,10 +56,10 @@ static ThreadPool *threadPool = nullptr; // static thread pool user by all code 
 #endif
 
 #if DBG_TRACK_PARTICLES
-#define DBG_TRACK_PARTICLE_MSG(pno, msg) std::cout << "...[track particle#" << pno << "] " << msg << std::endl;
+#define DBG_TRACK_PARTICLE_MSG(msg) std::cout << "...[track]: " << msg << std::endl;
 #define DBG_TRACK_PARTICLE_CODE(cmds ...) cmds
 #else
-#define DBG_TRACK_PARTICLE_MSG(pno, msg) {/*do nothing*/}
+#define DBG_TRACK_PARTICLE_MSG(msg) {/*do nothing*/}
 #define DBG_TRACK_PARTICLE_CODE(cmds ...) /*nothing*/
 #endif
 
@@ -201,10 +201,7 @@ public: // data
 public: // methods
   Particle() { }
   Particle(const Vec3 &newPos, const Vec3 &newV)
-    : pos(newPos), v(newV)
-#if DBG_TRACK_PARTICLES
-      , track(false)
-#endif
+    : pos(newPos), v(newV) DBG_TRACK_PARTICLE_CODE(, track(false))
   {
   }
   ~Particle() { }
@@ -240,7 +237,7 @@ public: // methods
     collided |= collideWall(pt(Z), v(Z), 0.+particleRadius,SZ(Z)-particleRadius);
 #if DBG_TRACK_PARTICLES
     if (track && collided)
-      DBG_TRACK_PARTICLE_MSG(pno, "collided with a wall") // TODO report which wall
+      DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% collided with a wall") % pno)) // TODO report which wall
 #endif
     // move to point
     move(pt);
@@ -274,9 +271,9 @@ public: // methods
     //std::cout << "collide < this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
 #if DBG_TRACK_PARTICLES
     if (track)
-      DBG_TRACK_PARTICLE_MSG(pno, str(boost::format("collided with a particle #%1% (as other particle)") % other.pno))
+      DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% collided with a particle #%2% (particle#%3% is the current particle in collision)") % pno % other.pno % pno))
     if (other.track)
-      DBG_TRACK_PARTICLE_MSG(other.pno, str(boost::format("collided with a particle #%1% (as current particle)") % pno))
+      DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% collided with a particle #%2% (particle#%3% is the other particle in collision)") % other.pno % pno % other.pno))
 #endif
   }
   friend std::ostream& operator<<(std::ostream &os, const Particle &p) {
@@ -360,6 +357,10 @@ static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
         auto p1 = *it1;
         for (auto it2 = it1; ++it2 != ite;) {
           auto p2 = *it2;
+#if DBG_TRACK_PARTICLES
+          if (p1->track || p2->track)
+            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking same-bucket for a collision between particle#%1% (%2%) and particle#%3% (%4%) ...") % p1->pno % *p1 % p2->pno % *p2))
+#endif
           if (p1->distance2(*p2) <= particleRadius2)
             fn(p1, p2);
         }
@@ -371,6 +372,10 @@ static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
         auto p1 = *it1;
             for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
             auto p2 = *it2;
+#if DBG_TRACK_PARTICLES
+          if (p1->track || p2->track)
+            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking cross-bucket for a collision between particle#%1% (%2%) and particle#%3% (%4%) ...") % p1->pno % *p1 % p2->pno % *p2))
+#endif
             if (p1->distance2(*p2) <= particleRadius2)
               fn(p1, p2);
           }
@@ -473,7 +478,7 @@ void Particle::move(const Vec3 &newPos) {
     particlesIndex.add(slot2, this);
 #if DBG_TRACK_PARTICLES
     if (track)
-      DBG_TRACK_PARTICLE_MSG(pno, "move between slots " << &slot1 << " -> " << &slot2) // TODO find/keep slot numbers and print them
+      DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% move between slots %2% -> %3%") % pno % &slot1 % &slot2)) // TODO find/keep slot numbers and print them
 #endif
     //std::cout << "MOVE p=" << this << " x=" << x << " y=" << y << " z=" << z << std::endl;
     statsNumBucketMoves++;
