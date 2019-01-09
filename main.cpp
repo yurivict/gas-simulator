@@ -53,8 +53,10 @@ static constexpr Float Patm = 101325;   // 101.325 kPa
 
 #if DBG_TRACK_PARTICLES
 #define DBG_TRACK_PARTICLE_MSG(pno, msg) std::cout << "...[track particle#" << pno << "] " << msg << std::endl;
+#define DBG_TRACK_PARTICLE_CODE(cmds ...) cmds
 #else
 #define DBG_TRACK_PARTICLE_MSG(pno, msg) {/*do nothing*/}
+#define DBG_TRACK_PARTICLE_CODE(cmds ...) /*nothing*/
 #endif
 
 //
@@ -660,8 +662,10 @@ public:
       return j;
     };
     json arr = json::array();
+    DBG_TRACK_PARTICLE_CODE(unsigned n = 1;)
     for (auto &p : particles) {
       json particle = json::object();
+      DBG_TRACK_PARTICLE_CODE(particle["n"] = n++;)
       particle["x"] = serializeVec(p.pos);
       particle["v"] = serializeVec(p.v);
       arr.insert(arr.end(), particle);
@@ -814,6 +818,17 @@ int mainGuarded(int argc, char *argv[]) {
   // parse arguments
   //
 
+#if DBG_TRACK_PARTICLES
+  auto splitToUInt = [](std::string strToSplit, char delimeter) {
+    std::stringstream ss(strToSplit);
+    std::string item;
+    std::vector<unsigned> split;
+    while (std::getline(ss, item, delimeter))
+       split.push_back(std::stoul(item));
+    return split;
+  };
+#endif
+
   cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
   options.add_options()
     ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
@@ -822,7 +837,7 @@ int mainGuarded(int argc, char *argv[]) {
     ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
     ("p,print",  "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
 #if DBG_TRACK_PARTICLES
-    ("t,track",   "Track particle (1-based)", cxxopts::value<unsigned>())
+    ("t,track",   "Track particle (1-based)", cxxopts::value<std::string>()) // doesn't allow to retrieve multiple values: https://github.com/jarro2783/cxxopts/issues/161
 #endif
     ;
 
@@ -833,10 +848,10 @@ int mainGuarded(int argc, char *argv[]) {
   numCycles = result["cycles"].as<unsigned>();
   cyclePrintPeriod = result["print"].as<unsigned>();
 #if DBG_TRACK_PARTICLES
-  int optTrack = -1;
-  if (result.count("track") > 0 && result["track"].as<unsigned>() > 0)
-    optTrack = result["track"].as<unsigned>();
-  {
+  std::vector<unsigned> optTrack;
+  if (result.count("track") > 0)
+    optTrack = splitToUInt(result["track"].as<std::string>(), ':');
+  { // assign pno in particles
     unsigned pno = 1;
     for (auto &p : particles)
       p.pno = pno++;
@@ -878,8 +893,9 @@ int mainGuarded(int argc, char *argv[]) {
     generateParticles();
   }
 #if DBG_TRACK_PARTICLES
-  if (optTrack != -1)
-    particles[optTrack-1].track = true;
+  for (auto track : optTrack)
+    if (track != 0)
+      particles[track-1].track = true;
 #endif
 
   //
@@ -938,8 +954,17 @@ int mainGuarded(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
   try {
     return mainGuarded(argc, argv);
-  } catch (cxxopts::OptionException ex) {
-    std::cerr << "Option parsing error: " << ex.what() << std::endl;
+  } catch (cxxopts::OptionException e) {
+    std::cerr << "Option parsing error: " << e.what() << std::endl;
+    return 1;
+  } catch (std::ifstream::failure e) {
+    std::cerr << "File error: " << e.what() << std::endl;
+    return 1;
+  } catch (nlohmann::json::parse_error e) {
+    std::cerr << "json error: " << e.what() << std::endl;
+    return 1;
+  } catch (std::exception const& e) {
+    std::cerr << "Unknown exception of type '" << typeid(e).name() << "' caught" << std::endl;
     return 1;
   }
 }
