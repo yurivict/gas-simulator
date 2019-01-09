@@ -60,7 +60,7 @@ static ThreadPool *threadPool = nullptr; // static thread pool user by all code 
 #define DBG_TRACK_PARTICLE_CODE(cmds ...) cmds
 #else
 #define DBG_TRACK_PARTICLE_MSG(msg) {/*do nothing*/}
-#define DBG_TRACK_PARTICLE_CODE(cmds ...) /*nothing*/
+#define DBG_TRACK_PARTICLE_CODE(cmds ...) {/*do nothing*/}
 #endif
 
 //
