@@ -51,6 +51,10 @@ static constexpr Float Patm = 101325;   // 101.325 kPa
 // Vmol(20°C) = 1mol*R*T=293.15K/101325 ≈ 0.0241m³ = 24.1dm³
 // V(1mil, 20°C) = (n=1mil/Na)RT/Patm ≈ 0.342e-6 (~0.3μm)
 
+#if USE_PARALLELISM
+static ThreadPool *threadPool = nullptr; // static thread pool user by all code here
+#endif
+
 #if DBG_TRACK_PARTICLES
 #define DBG_TRACK_PARTICLE_MSG(pno, msg) std::cout << "...[track particle#" << pno << "] " << msg << std::endl;
 #define DBG_TRACK_PARTICLE_CODE(cmds ...) cmds
@@ -329,12 +333,54 @@ private:
 }; // ParticlesIndex
 
 static ParticlesIndex particlesIndex;
+#if USE_PARALLELISM
+static std::mutex particlesIndexLock;
+#endif
 
 //
 // Helper classes: iterators
 //
 
 namespace Iterate {
+
+template<typename Fn>
+static void CellNeighborsForward(int ix, int iy, int iz, Fn &&fn);
+
+namespace Detail {
+
+template<typename Fn>
+static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
+  const auto& sx = particlesIndex.get()[ix];
+  for (unsigned iy = 0; iy < ParticlesIndex::NSpaceSlots[1]; iy++) {
+    const auto& sy = sx[iy];
+    for (unsigned iz = 0; iz < ParticlesIndex::NSpaceSlots[2]; iz++) {
+      const auto& sz = sy[iz];
+      // process all pairs: same bucket
+      for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
+        auto p1 = *it1;
+        for (auto it2 = it1; ++it2 != ite;) {
+          auto p2 = *it2;
+          if (p1->distance2(*p2) <= particleRadius2)
+            fn(p1, p2);
+        }
+      } // same bucket
+      // process all pairs: cross-bucket
+      CellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
+        auto &slot2 = particlesIndex.get()[ix][iy][iz];
+        for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
+        auto p1 = *it1;
+            for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
+            auto p2 = *it2;
+            if (p1->distance2(*p2) <= particleRadius2)
+              fn(p1, p2);
+          }
+        }
+      });
+    }
+  }
+}
+
+}; // Detail
 
 template<typename Fn>
 static void CellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
@@ -349,41 +395,64 @@ static void CellNeighborsForward(int ix, int iy, int iz, Fn &&fn) {
 
 template<typename Fn>
 static void ThroughOverlapsSer(Fn &&fn) {
-  for (unsigned ix = 0; ix < ParticlesIndex::NSpaceSlots[0]; ix++) {
-    const auto& sx = particlesIndex.get()[ix];
-    for (unsigned iy = 0; iy < ParticlesIndex::NSpaceSlots[1]; iy++) {
-      const auto& sy = sx[iy];
-      for (unsigned iz = 0; iz < ParticlesIndex::NSpaceSlots[2]; iz++) {
-        const auto& sz = sy[iz];
-        // process all pairs: same bucket
-        for (auto it1 = sz.begin(), ite = sz.end(); it1 != ite; it1++) {
-          auto p1 = *it1;
-          for (auto it2 = it1; ++it2 != ite;) {
-            auto p2 = *it2;
-            if (p1->distance2(*p2) <= particleRadius2)
-              fn(p1, p2);
-          }
-        } // same bucket
-        // process all pairs: cross-bucket
-        CellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
-          auto &slot2 = particlesIndex.get()[ix][iy][iz];
-          for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
-            auto p1 = *it1;
-            for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
-              auto p2 = *it2;
-              if (p1->distance2(*p2) <= particleRadius2)
-                fn(p1, p2);
-            }
-          }
-        });
-      }
-    }
-  }
+  for (unsigned ix = 0; ix < ParticlesIndex::NSpaceSlots[0]; ix++)
+    Detail::ThroughOverlapsYZ(ix, fn);
 }
+
+#if USE_PARALLELISM
+template<typename Fn>
+static void ThroughOverlapsPar(Fn &&fn) {
+  unsigned dix = (ParticlesIndex::NSpaceSlots[0]+1)/NCPU;
+  std::mutex lock;
+  bool done[1+NCPU] = {false};
+  auto fnStitchJob = [fn](unsigned xStitch) {
+    //std::cout << ">> stitch @ xStitch=" << xStitch << std::endl;
+    Detail::ThroughOverlapsYZ(xStitch, fn);
+    //std::cout << "<< stitch @ xStitch=" << xStitch << std::endl;
+  };
+  for (unsigned ix = 0, cpu = 1; ix < ParticlesIndex::NSpaceSlots[0]; cpu++) {
+    unsigned ix1 = ix + dix, ixe;
+    if (cpu == NCPU && ix1 != ParticlesIndex::NSpaceSlots[0])
+      ix1 = ParticlesIndex::NSpaceSlots[0];
+    ixe = cpu < NCPU ? ix1-1 : ix1;
+    threadPool->doJob([cpu, ix, ixe, fn, fnStitchJob, &done, &lock]() {
+      //std::cout << ">> main @ ix=" << ix << ".." << ixe-1 << std::endl;
+      for (unsigned x = ix; x < ixe; x++) 
+        Detail::ThroughOverlapsYZ(ix, fn);
+      // done
+      std::unique_lock<std::mutex> l(lock);
+      done[cpu] = true;
+      if (cpu > 1 && done[cpu-1])
+        // stitch back
+        threadPool->doJob([ix,fnStitchJob]() {
+          fnStitchJob(ix-1);
+        });
+      if (cpu < NCPU && done[cpu+1])
+        // stitch front
+        threadPool->doJob([ixe,fnStitchJob]() {
+          fnStitchJob(ixe);
+        });
+      //std::cout << "<< main @ ix=" << ix << ".." << ixe-1 << std::endl;
+    });
+    ix = ix1;
+  }
+  // wait for all tasks to finish
+  //std::cout << ">> waitForAll" << std::endl;
+  threadPool->waitForAll();
+  //std::cout << "<< waitForAll" << std::endl;
+}
+#endif
 
 template<typename Fn>
 static void ThroughOverlaps(Fn &&fn) {
+#if USE_PARALLELISM
+  if (2*NCPU-1 <= ParticlesIndex::NSpaceSlots[0]) // need to have at least 2 rows in each, except for the last one
+    ThroughOverlapsPar(fn);
+  else
+    ThroughOverlapsSer(fn);
+#else
   ThroughOverlapsSer(fn);
+#endif
 }
 
 }; // Iterate
@@ -397,6 +466,9 @@ void Particle::move(const Vec3 &newPos) {
   pos = newPos;
   auto &slot2 = particlesIndex.findSlot(this);
   if (&slot1 != &slot2) {
+#if USE_PARALLELISM
+    std::unique_lock<std::mutex> l(particlesIndexLock);
+#endif
     particlesIndex.del(slot1, this);
     particlesIndex.add(slot2, this);
 #if DBG_TRACK_PARTICLES
@@ -512,7 +584,7 @@ static void generateParticles() {
     hadOverlaps = false;
     // find overlaps
     std::set<Particle*> overlaps;
-    Iterate::ThroughOverlaps([&overlaps](Particle *p1, Particle *p2) {
+    Iterate::ThroughOverlapsSer([&overlaps](Particle *p1, Particle *p2) {
       overlaps.insert(p2);
     });
     // regenerate collided particles
@@ -693,20 +765,14 @@ public:
 //
 
 class Evolver {
-#if USE_PARALLELISM
-  ThreadPool threadPool;
-#endif
 public:
-#if USE_PARALLELISM
-  Evolver() : threadPool(NCPU) { }
-#endif
   static void evolvePairwiseVelocity() {
     for (unsigned i = 0; i < Pairwise_RandomizeRounds; i++) {
       auto pp = rg.particlePair();
       transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
     }
   }
-  void evolvePhysically() {
+  static void evolvePhysically() {
     uint64_t cpuCycles0 = xasm::getCpuCycles();
 #if DBG_SAVE_IMAGES
     imageSaver.save(0./*t*/, 5/*digits in time*/);
@@ -747,7 +813,7 @@ public:
     }
   }
 private:
-  void moveIterateByParticle() { // faster when occupancy percentage is low
+  static void moveIterateByParticle() { // faster when occupancy percentage is low
 #if USE_PARALLELISM
     if (particles.size() >= NCPU)
       moveIterateByParticlePar();
@@ -758,36 +824,36 @@ private:
 #endif
   }
 #if USE_PARALLELISM
-  void moveIterateByParticlePar() {
+  static void moveIterateByParticlePar() {
     unsigned ie = particles.size(), di = ie / NCPU;
-    for (unsigned idx1 = 0, cpu = 0; idx1 < ie; cpu++) {
+    for (unsigned idx1 = 0, cpu = 1; idx1 < ie; cpu++) {
       unsigned idx2 = idx1 + di;
       if (idx2 > ie)
         idx2 = ie;
-      if (cpu == NCPU-1 && idx2 < ie)
+      if (cpu == NCPU && idx2 < ie)
         idx2 = ie;
-      threadPool.doJob([idx1, idx2]() {
+      threadPool->doJob([idx1, idx2]() {
         for (unsigned i = idx1; i < idx2; i++)
           particles[i].move(dt);
       }); 
       idx1 = idx2;
     }
     // wait for all tasks to finish
-    threadPool.waitForAll();
+    threadPool->waitForAll();
   }
 #endif
-  void moveIterateByParticleSeq() {
+  static void moveIterateByParticleSeq() {
     for (auto &p : particles)
       p.move(dt);
   }
-  void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
+  static void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
     auto p = *it;
     it++;
     if (it != ite)
       moveIterateByBucketHelper(it, ite);
     p->move(dt);
   }
-  void moveIterateByBucket() { // slower when occupancy percentage is low
+  static void moveIterateByBucket() { // slower when occupancy percentage is low
     for (auto slot = &particlesIndex.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
       if (!slot->empty()) {
         moveIterateByBucketHelper(slot->begin(), slot->end());
@@ -807,6 +873,10 @@ int mainGuarded(int argc, char *argv[]) {
     std::cout << "!!!DEBUG CODE!!! (DBG_TRACK_PARTICLES is enabled)" << std::endl;
     std::cout << "!!!DEBUG CODE!!!" << std::endl;
   }
+
+#if USE_PARALLELISM
+  threadPool = new ThreadPool(NCPU);
+#endif
 
   //
   // cycles
@@ -907,9 +977,9 @@ int mainGuarded(int argc, char *argv[]) {
   // evolve
   //
   if (0)
-    Evolver().evolvePairwiseVelocity();
+    Evolver::evolvePairwiseVelocity();
   if (1)
-    Evolver().evolvePhysically();
+    Evolver::evolvePhysically();
 
   //
   // final log & stats
@@ -947,6 +1017,10 @@ int mainGuarded(int argc, char *argv[]) {
   //
   auto cpuCyclesEnd = xasm::getCpuCycles();
   std::cout << "consumed cycles: " << formatUInt64(cpuCyclesEnd-cpuCycles0) << " {now at " << formatUInt64(cpuCyclesEnd) << "}" << std::endl;
+
+#if USE_PARALLELISM
+  delete threadPool;
+#endif
 
   return 0;
 }
