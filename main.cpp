@@ -912,7 +912,8 @@ int mainGuarded(int argc, char *argv[]) {
     ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
     ("p,print",  "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
 #if DBG_TRACK_PARTICLES
-    ("t,track",   "Track particle (1-based)", cxxopts::value<std::string>()) // doesn't allow to retrieve multiple values: https://github.com/jarro2783/cxxopts/issues/161
+    ("t,track",   "Track particles: 1-based, colon-separated values", cxxopts::value<std::string>())
+      // could use std::vector<unsigned> here to do '-t pno1 -t pno 2 ...', but maybe it's better (more compact) this way with colon-separated values
 #endif
     ;
 
