@@ -126,7 +126,7 @@ namespace xasm {
 static void formatUInt64(uint64_t x, std::ostream &os) {
   if (x >= 1000) {
     formatUInt64(x/uint64_t(1000), os);
-    os << ",";
+    os << ',';
     os << std::setw(3) << std::setfill('0') << x%1000;
   } else {
     os << x;
