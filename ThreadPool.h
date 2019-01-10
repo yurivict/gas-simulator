@@ -33,6 +33,10 @@ public:
     for (auto& thread : xthreads)
       thread.join();
   }
+  static int& tid() {
+    static thread_local int _tid;
+    return _tid;
+  }
   void doJob(std::function <void (void)> func) {
     // Place a job on the queu and unblock a thread
     std::unique_lock<std::mutex> l(lock);
@@ -48,6 +52,7 @@ public:
   }
 protected:
   void threadEntry(int i) {
+    tid() = i;
     std::function <void (void)> job;
 
     while (true) {
