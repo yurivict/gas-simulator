@@ -180,7 +180,7 @@ static unsigned numCycles;
 static unsigned cyclePrintPeriod; // how often to print the cycle
 static constexpr Float Teff = Troom;  // effective temperature (same as default temperature)
 static constexpr Float Vthermal = constexpr_funcs::sqrt((k*Teff)*2/m);  // thermal velocity
-static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a negligent number of particles XXX TODO 5. should be percentage estimate based
+static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
 static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
 static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
 static constexpr Float initE1 = constexpr_funcs::temperatureToEnergy(Troom)*0.95;
@@ -538,23 +538,28 @@ class Random {
   // fields
   unsigned                                 seed;
   std::mt19937                             generator;
-  urdFloat     uniform01;
+  urdFloat     uniformFloat01;
   uidUnsigned  uniform1N;
+  uidUnsigned  uniformUInt01;
   urdFloat     uniformCoord[3]; // per dimension
   urdFloat     uniformEnergy;
 public:
   Random()
   : seed(std::chrono::system_clock::now().time_since_epoch().count()),
     generator(seed),
-    uniform01(0.0, 1.0),
+    uniformFloat01(0.0, 1.0),
     uniform1N(1,Ncreate),
+    uniformUInt01(0,1),
     uniformCoord{urdFloat(0.0+particleRadius, SZ(X)-particleRadius),
                  urdFloat(0.0+particleRadius, SZ(Y)-particleRadius),
                  urdFloat(0.0+particleRadius, SZ(Z)-particleRadius)},
     uniformEnergy(initE1, initE2)
   { }
   auto rand01() {
-    return uniform01(generator);
+    return uniformFloat01(generator);
+  }
+  auto boolean() {
+    return uniformUInt01(generator) == 1 ? true : false;
   }
   auto sphereAngles() {
     // from http://corysimon.github.io/articles/uniformdistn-on-sphere/
@@ -576,7 +581,11 @@ public:
     return uniformCoord[idx](generator);
   }
   auto energy() {
-    return uniformEnergy(generator);
+    // one area
+    //return uniformEnergy(generator);
+
+    // more dissipated pattern
+    return constexpr_funcs::temperatureToEnergy(Troom)*(boolean() ? 0.5 : 1.5);
   }
   auto particlePair() {
     unsigned i1, i2;
@@ -674,12 +683,11 @@ static void transferPercentageOfEnergy(Particle &p1, Particle &p2, Float frac) {
   //AOut() << "transferPercentageOfEnergy < p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
 }
 
-static Float totalEnergy(std::array<Particle,Ncreate>::const_iterator it1, std::array<Particle,Ncreate>::const_iterator it2) {
-  Float acc = 0.;
-  auto it = it1;
-  while (it != it2)
-    acc += it++->energy();
-  return acc / (it2 - it1);
+static Float totalEnergy(const std::array<Particle,Ncreate> &pp) {
+  Float e = 0.;
+  for (auto &p : pp)
+    e += p.energy();
+  return e;
 }
 
 //
@@ -1006,7 +1014,13 @@ int mainGuarded(int argc, char *argv[]) {
   //
   // initial log
   //
-  std::cout << "log(init): energy-before=" << totalEnergy(particles.begin(), particles.end()) << " numCycles=" << numCycles << std::endl;
+  {
+    auto energy = totalEnergy(particles);
+    std::cout << "log(init): energy(before)=" << energy
+                        << " temperature(before)=" << energy/Ncreate/k
+                        << " numCycles=" << numCycles
+                        << std::endl;
+  }
 
   //
   // evolve
@@ -1019,11 +1033,15 @@ int mainGuarded(int argc, char *argv[]) {
   //
   // final log & stats
   //
-  std::cout << "log(fini): energy-after=" << totalEnergy(particles.begin(), particles.end()) << std::endl;
-  std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N
-                        << " collisions(PP)=" << formatUInt64(statsNumCollisionsPP)
-                        << " collisions(PW)=" << formatUInt64(statsNumCollisionsPW)
-                        << std::endl;
+  {
+    auto energy = totalEnergy(particles);
+    std::cout << "log(fini): energy(after)=" << energy << std::endl;
+    std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N
+                          << " temperature(after)=" << energy/Ncreate/k
+                          << " collisions(PP)=" << formatUInt64(statsNumCollisionsPP)
+                          << " collisions(PW)=" << formatUInt64(statsNumCollisionsPW)
+                          << std::endl;
+  }
 
   //
   // output
