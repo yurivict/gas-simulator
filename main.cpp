@@ -63,6 +63,23 @@ static ThreadPool *threadPool = nullptr; // static thread pool user by all code 
 #define DBG_TRACK_PARTICLE_CODE(cmds ...) {/*do nothing*/}
 #endif
 
+#if USE_PARALLELISM
+#define TID "[" << ThreadPool::tid() << "]"
+#else
+#define TID ""
+#endif
+
+//
+// helper classes
+//
+
+class AOut : public std::ostringstream { // atomic message printer
+public:
+  ~AOut() {
+    std::cout << str();
+  }
+};
+
 //
 // helper functions
 //
@@ -264,11 +281,11 @@ public: // methods
     return (pos-other.pos).len2();
   }
   void collide(Particle &other) {
-    //std::cout << "collide > this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
+    //AOut() << "collide > this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
     Vec3 dv = (other.v - v).project((other.pos - pos).normalizeZ());
     v += dv;
     other.v -= dv;
-    //std::cout << "collide < this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
+    //AOut() << "collide < this=" << *this << " other=" << other << "Etotal=" << (energy()+other.energy()) << std::endl;
 #if DBG_TRACK_PARTICLES
     if (track)
       DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% collided with a particle #%2% (particle#%3% is the current particle in collision)") % pno % other.pno % pno))
@@ -284,12 +301,22 @@ public: // methods
 
 class ParticlesIndex { // index of particles in XYZ slot space
 public:
-  typedef std::list<Particle*> Slot;
+  class Slot : public std::list<Particle*> {
+    friend std::ostream& operator<<(std::ostream &os, const Slot &s) {
+      unsigned ix = (&s - &instance.index[0][0][0])/(NSpaceSlots[1]*NSpaceSlots[2]);
+      unsigned iy = (&s - &instance.index[ix][0][0])/NSpaceSlots[2];
+      unsigned iz = (&s - &instance.index[ix][iy][0]);
+      os << "{slot[" << ix << "][" << iy << "][" << iz << "] sz=" << s.size() << "}";
+      return os;
+    }
+  }; // Slot
   static constexpr unsigned NSpaceSlots[3] = {constexpr_funcs::lim1((unsigned)(SZ(X)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
                                               constexpr_funcs::lim1((unsigned)(SZ(Y)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5)),
                                               constexpr_funcs::lim1((unsigned)(SZ(Z)/constexpr_funcs::cbrt(SZ(X)*SZ(Y)*SZ(Z)/N*particlesPerBucket)+0.5))};
   static constexpr Float SZdivNSpaceSlots[3] = {SZa[0]/NSpaceSlots[0], SZa[1]/NSpaceSlots[1], SZa[2]/NSpaceSlots[2]};
   // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
+  static ParticlesIndex instance;
+  static std::mutex instanceLock;
 private:
   std::array<std::array<std::array<Slot,NSpaceSlots[2]>,NSpaceSlots[1]>,NSpaceSlots[0]> index;
 public:
@@ -329,9 +356,9 @@ private:
   }
 }; // ParticlesIndex
 
-static ParticlesIndex particlesIndex;
+ParticlesIndex ParticlesIndex::instance;
 #if USE_PARALLELISM
-static std::mutex particlesIndexLock;
+std::mutex ParticlesIndex::instanceLock;
 #endif
 
 //
@@ -347,7 +374,7 @@ namespace Detail {
 
 template<typename Fn>
 static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
-  const auto& sx = particlesIndex.get()[ix];
+  const auto& sx = ParticlesIndex::instance.get()[ix];
   for (unsigned iy = 0; iy < ParticlesIndex::NSpaceSlots[1]; iy++) {
     const auto& sy = sx[iy];
     for (unsigned iz = 0; iz < ParticlesIndex::NSpaceSlots[2]; iz++) {
@@ -359,7 +386,8 @@ static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
           auto p2 = *it2;
 #if DBG_TRACK_PARTICLES
           if (p1->track || p2->track)
-            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking same-bucket for a collision between particle#%1% (%2%) and particle#%3% (%4%) ...") % p1->pno % *p1 % p2->pno % *p2))
+            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking same-bucket (%1%) for a collision between particle#%2% (%3%) and particle#%4% (%5%) ...")
+                                                     % sz % p1->pno % *p1 % p2->pno % *p2))
 #endif
           if (p1->distance2(*p2) <= particleRadius2)
             fn(p1, p2);
@@ -367,14 +395,15 @@ static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
       } // same bucket
       // process all pairs: cross-bucket
       CellNeighborsForward(ix,iy,iz, [&sz,fn](int ix, int iy, int iz) {
-        auto &slot2 = particlesIndex.get()[ix][iy][iz];
+        auto &slot2 = ParticlesIndex::instance.get()[ix][iy][iz];
         for (auto it1 = sz.begin(), it1e = sz.end(); it1 != it1e; it1++) {
-        auto p1 = *it1;
-            for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
+          auto p1 = *it1;
+          for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
             auto p2 = *it2;
 #if DBG_TRACK_PARTICLES
           if (p1->track || p2->track)
-            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking cross-bucket for a collision between particle#%1% (%2%) and particle#%3% (%4%) ...") % p1->pno % *p1 % p2->pno % *p2))
+            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking cross-bucket (%1%->%2%) for a collision between particle#%3% (%4%) and particle#%5% (%6%) ...")
+                                                     % sz % slot2 % p1->pno % *p1 % p2->pno % *p2))
 #endif
             if (p1->distance2(*p2) <= particleRadius2)
               fn(p1, p2);
@@ -411,9 +440,9 @@ static void ThroughOverlapsPar(Fn &&fn) {
   std::mutex lock;
   bool done[1+NCPU] = {false};
   auto fnStitchJob = [fn](unsigned xStitch) {
-    //std::cout << ">> stitch @ xStitch=" << xStitch << std::endl;
+    //AOut() << TID << ">> stitch @ xStitch=" << xStitch << std::endl;
     Detail::ThroughOverlapsYZ(xStitch, fn);
-    //std::cout << "<< stitch @ xStitch=" << xStitch << std::endl;
+    //AOut() << TID << "<< stitch @ xStitch=" << xStitch << std::endl;
   };
   for (unsigned ix = 0, cpu = 1; ix < ParticlesIndex::NSpaceSlots[0]; cpu++) {
     unsigned ix1 = ix + dix, ixe;
@@ -421,7 +450,7 @@ static void ThroughOverlapsPar(Fn &&fn) {
       ix1 = ParticlesIndex::NSpaceSlots[0];
     ixe = cpu < NCPU ? ix1-1 : ix1;
     threadPool->doJob([cpu, ix, ixe, fn, fnStitchJob, &done, &lock]() {
-      //std::cout << ">> main @ ix=" << ix << ".." << ixe-1 << std::endl;
+      //AOut() << TID << ">> {cpu#" << cpu << "} main @ ix=" << ix << ".." << ixe-1 << std::endl;
       for (unsigned x = ix; x < ixe; x++) 
         Detail::ThroughOverlapsYZ(ix, fn);
       // done
@@ -437,14 +466,14 @@ static void ThroughOverlapsPar(Fn &&fn) {
         threadPool->doJob([ixe,fnStitchJob]() {
           fnStitchJob(ixe);
         });
-      //std::cout << "<< main @ ix=" << ix << ".." << ixe-1 << std::endl;
+      //AOut() << TID << "<< main @ ix=" << ix << ".." << ixe-1 << std::endl;
     });
     ix = ix1;
   }
   // wait for all tasks to finish
-  //std::cout << ">> waitForAll" << std::endl;
+  //AOut() << ">> waitForAll" << std::endl;
   threadPool->waitForAll();
-  //std::cout << "<< waitForAll" << std::endl;
+  //AOut() << "<< waitForAll" << std::endl;
 }
 #endif
 
@@ -467,20 +496,20 @@ static void ThroughOverlaps(Fn &&fn) {
 //
 
 void Particle::move(const Vec3 &newPos) {
-  auto &slot1 = particlesIndex.findSlot(this);
+  auto &slot1 = ParticlesIndex::instance.findSlot(this);
   pos = newPos;
-  auto &slot2 = particlesIndex.findSlot(this);
+  auto &slot2 = ParticlesIndex::instance.findSlot(this);
   if (&slot1 != &slot2) {
 #if USE_PARALLELISM
-    std::unique_lock<std::mutex> l(particlesIndexLock);
+    std::unique_lock<std::mutex> l(ParticlesIndex::instanceLock);
 #endif
-    particlesIndex.del(slot1, this);
-    particlesIndex.add(slot2, this);
+    ParticlesIndex::instance.del(slot1, this);
+    ParticlesIndex::instance.add(slot2, this);
 #if DBG_TRACK_PARTICLES
     if (track)
-      DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% move between slots %2% -> %3%") % pno % &slot1 % &slot2)) // TODO find/keep slot numbers and print them
+      DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% move between slots %2% -> %3%") % pno % slot1 % slot2)) // TODO find/keep slot numbers and print them
 #endif
-    //std::cout << "MOVE p=" << this << " x=" << x << " y=" << y << " z=" << z << std::endl;
+    //AOut() << "MOVE p=" << this << " x=" << x << " y=" << y << " z=" << z << std::endl;
     statsNumBucketMoves++;
   }
 }
@@ -581,7 +610,7 @@ static void generateParticles() {
 
   // add to index
   for (auto &p : particles)
-    particlesIndex.add(p.pos, &p);
+    ParticlesIndex::instance.add(p.pos, &p);
 
   // remove overlaps
   bool hadOverlaps;
@@ -595,11 +624,11 @@ static void generateParticles() {
     // regenerate collided particles
     hadOverlaps = !overlaps.empty();
     for (auto p : overlaps) {
-      particlesIndex.del(p);
+      ParticlesIndex::instance.del(p);
       *p = genParticleEnergyRange();
-      particlesIndex.add(p);
+      ParticlesIndex::instance.add(p);
     }
-    std::cout << "generate.overlap.iteration: overlapsCount=" << overlaps.size() << std::endl;
+    AOut() << "generate.overlap.iteration: overlapsCount=" << overlaps.size() << std::endl;
   } while (hadOverlaps);
 }
 
@@ -638,11 +667,11 @@ static void writeFile(const std::string &fname, const std::vector<Rec> &recs, Fn
 
 static void transferPercentageOfEnergy(Particle &p1, Particle &p2, Float frac) {
   // p1 transfers pct of enerty to p2
-  //std::cout << "transferPercentageOfEnergy > p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
+  //AOut() << "transferPercentageOfEnergy > p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
   auto deltaE = p1.energy()*frac;
   p1.addEnergy(-deltaE);
   p2.addEnergy(+deltaE);
-  //std::cout << "transferPercentageOfEnergy < p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
+  //AOut() << "transferPercentageOfEnergy < p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
 }
 
 static Float totalEnergy(std::array<Particle,Ncreate>::const_iterator it1, std::array<Particle,Ncreate>::const_iterator it2) {
@@ -692,7 +721,7 @@ public:
 #if DBG_TRACK_PARTICLES
         if (p.track) {
           pixel = {0,0,255};
-          //std::cout << "Display tracked particle @t=" << t << ": " << p << std::endl;
+          //AOut() << "Display tracked particle @t=" << t << ": " << p << std::endl;
         }
 #endif
         FreeImage_SetPixelColor(bitmap,x,y,&pixel);
@@ -808,12 +837,12 @@ public:
       // print tick and stats
       if ((cycle+1) % cyclePrintPeriod == 0) {
         uint64_t cpuCyclesNow = xasm::getCpuCycles();
-        std::cout << "tick#" << cycle+1 << ":evolvePhysically:"
-                  << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
-                  << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
-                  << " statsNumCollisionsPW=" << statsNumCollisionsPW
-                  << " statsNumBucketMoves=" << statsNumBucketMoves
-                  << std::endl;
+        AOut() << "tick#" << cycle+1 << ":evolvePhysically:"
+               << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
+               << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
+               << " statsNumCollisionsPW=" << statsNumCollisionsPW
+               << " statsNumBucketMoves=" << statsNumBucketMoves
+               << std::endl;
       }
     }
   }
@@ -859,7 +888,7 @@ private:
     p->move(dt);
   }
   static void moveIterateByBucket() { // slower when occupancy percentage is low
-    for (auto slot = &particlesIndex.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
+    for (auto slot = &ParticlesIndex::instance.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
       if (!slot->empty()) {
         moveIterateByBucketHelper(slot->begin(), slot->end());
         //sz += slot->size();
@@ -944,14 +973,14 @@ int mainGuarded(int argc, char *argv[]) {
   // params & stats
   //
 
-  std::cout << "params(init): dt=" << dt
-                         << " Vthermal=" << Vthermal
-                         << " numCycles=" << numCycles
-                         << std::endl;
-  std::cout << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
-                        << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
-                        << " P/Patm (at Troom)=" << ((Ncreate/Na)*R*Troom/(SZ(X)*SZ(Y)*SZ(Z))/Patm)
-                        << std::endl;
+  AOut() << "params(init): dt=" << dt
+                      << " Vthermal=" << Vthermal
+                      << " numCycles=" << numCycles
+                      << std::endl;
+  AOut() << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
+                     << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
+                     << " P/Patm (at Troom)=" << ((Ncreate/Na)*R*Troom/(SZ(X)*SZ(Y)*SZ(Z))/Patm)
+                     << std::endl;
 
   //
   // generate or restart
@@ -963,7 +992,7 @@ int mainGuarded(int argc, char *argv[]) {
     Serializer::unserialize(nlohmann::json::parse(file));
     file.close();
     for (auto &p : particles)
-      particlesIndex.add(&p);
+      ParticlesIndex::instance.add(&p);
     std::cout << "done unserializing from " << optRestartFile << " ..." << std::endl;
   } else {
     generateParticles();
