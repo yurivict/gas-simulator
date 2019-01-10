@@ -452,7 +452,7 @@ static void ThroughOverlapsPar(Fn &&fn) {
     threadPool->doJob([cpu, ix, ixe, fn, fnStitchJob, &done, &lock]() {
       //AOut() << TID << ">> {cpu#" << cpu << "} main @ ix=" << ix << ".." << ixe-1 << std::endl;
       for (unsigned x = ix; x < ixe; x++) 
-        Detail::ThroughOverlapsYZ(ix, fn);
+        Detail::ThroughOverlapsYZ(x, fn);
       // done
       std::unique_lock<std::mutex> l(lock);
       done[cpu] = true;
