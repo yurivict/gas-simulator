@@ -385,9 +385,9 @@ static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
         for (auto it2 = it1; ++it2 != ite;) {
           auto p2 = *it2;
 #if DBG_TRACK_PARTICLES
-          if (p1->track || p2->track)
-            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking same-bucket (%1%) for a collision between particle#%2% (%3%) and particle#%4% (%5%) ...")
-                                                     % sz % p1->pno % *p1 % p2->pno % *p2))
+          //if (p1->track || p2->track)
+          //  DBG_TRACK_PARTICLE_MSG(str(boost::format("checking same-bucket (%1%) for a collision between particle#%2% (%3%) and particle#%4% (%5%) ...")
+          //                                           % sz % p1->pno % *p1 % p2->pno % *p2))
 #endif
           if (p1->distance2(*p2) <= particleRadius2)
             fn(p1, p2);
@@ -401,9 +401,9 @@ static void ThroughOverlapsYZ(unsigned ix, Fn &&fn) {
           for (auto it2 = slot2.begin(), it2e = slot2.end(); it2 != it2e; it2++) {
             auto p2 = *it2;
 #if DBG_TRACK_PARTICLES
-          if (p1->track || p2->track)
-            DBG_TRACK_PARTICLE_MSG(str(boost::format("checking cross-bucket (%1%->%2%) for a collision between particle#%3% (%4%) and particle#%5% (%6%) ...")
-                                                     % sz % slot2 % p1->pno % *p1 % p2->pno % *p2))
+          //if (p1->track || p2->track)
+          //  DBG_TRACK_PARTICLE_MSG(str(boost::format("checking cross-bucket (%1%->%2%) for a collision between particle#%3% (%4%) and particle#%5% (%6%) ...")
+          //                                           % sz % slot2 % p1->pno % *p1 % p2->pno % *p2))
 #endif
             if (p1->distance2(*p2) <= particleRadius2)
               fn(p1, p2);
