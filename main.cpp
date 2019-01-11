@@ -362,6 +362,70 @@ std::mutex ParticlesIndex::instanceLock;
 #endif
 
 //
+// History
+//
+
+class History {
+  typedef std::chrono::time_point<std::chrono::system_clock> Tm;
+  using json = nlohmann::json;
+  class Record {
+    std::string action;
+    Tm tm1; // time it started
+    Tm tm2; // time it ended
+    auto serialize() const {
+      auto tmToStr = [](Tm tm) {
+        std::time_t tm_c = std::chrono::system_clock::to_time_t(tm);
+        std::ostringstream ss;
+        ss << std::put_time(std::localtime(&tm_c), "%F %T");
+        return ss.str();
+      };
+      json j = json::object();
+      j["action"] = action;
+      j["tm1"] = std::chrono::duration_cast<std::chrono::milliseconds>(tm1.time_since_epoch()).count();
+      j["tm1-str"] = tmToStr(tm1);
+      j["tm2"] = std::chrono::duration_cast<std::chrono::milliseconds>(tm2.time_since_epoch()).count();
+      j["tm2-str"] = tmToStr(tm2);
+      return j;
+    }
+    static Record unserialize(const json &j) {
+      Record rec;
+      rec.action = j["action"];
+      rec.tm1 = Tm(std::chrono::milliseconds(j["tm1"]));
+      rec.tm2 = Tm(std::chrono::milliseconds(j["tm2"]));
+      return rec;
+    }
+    friend class History;
+  }; // Record
+  std::vector<Record>   lst;
+public:
+  History() { }
+  void begin(const std::string &action) {
+    Record rec;
+    rec.action = action;
+    rec.tm1 = std::chrono::system_clock::now();
+    lst.push_back(rec);
+  }
+  void end() {
+    lst.rbegin()->tm2 = std::chrono::system_clock::now();
+  }
+  auto serialize() const {
+    json j = json::array();
+    for (auto rec : lst)
+      j.insert(j.end(), rec.serialize());
+    return j;
+  }
+  static History unserialize(const json &j) {
+    History h;
+    for (auto jr : j) {
+      h.lst.push_back(Record::unserialize(jr));
+    }
+    return h;
+  }
+}; // History
+
+static History history;
+
+//
 // Helper classes: iterators
 //
 
@@ -597,6 +661,9 @@ public:
 static Random rg;
 
 static void generateParticles() {
+  // record in history
+  history.begin(str(boost::format("generate %1% particles") % Ncreate));
+
   // TODO eliminate initial overlaps
   auto genParticleEnergyRange = []() {
     auto [sphX,sphY,sphZ] = rg.sphereCoords();
@@ -639,6 +706,9 @@ static void generateParticles() {
     }
     AOut() << "generate.overlap.iteration: overlapsCount=" << overlaps.size() << std::endl;
   } while (hadOverlaps);
+
+  // record in history
+  history.end();
 }
 
 static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
@@ -768,6 +838,17 @@ class Serializer {
   using json = nlohmann::json;
 public:
   static auto serialize() {
+    json j = json::object();
+    j["particles"] = serializeParticles();
+    j["history"] = history.serialize();
+    return j;
+  }
+  static void unserialize(const json &j) {
+    unserializeParticles(j["particles"]);
+    history = History::unserialize(j["history"]);
+  }
+private:
+  static json serializeParticles() {
     auto serializeVec = [](const Vec3 &v){
       json j = json::array();
       j.insert(j.end(), v(X));
@@ -775,18 +856,20 @@ public:
       j.insert(j.end(), v(Z));
       return j;
     };
-    json arr = json::array();
+
+    json arrParticles = json::array();
     DBG_TRACK_PARTICLE_CODE(unsigned n = 1;)
     for (auto &p : particles) {
       json particle = json::object();
       DBG_TRACK_PARTICLE_CODE(particle["n"] = n++;)
       particle["x"] = serializeVec(p.pos);
       particle["v"] = serializeVec(p.v);
-      arr.insert(arr.end(), particle);
+      arrParticles.insert(arrParticles.end(), particle);
     }
-    return arr;
+
+    return arrParticles;
   }
-  static void unserialize(const json &j) {
+  static void unserializeParticles(const json &j) {
     auto unserializeVec = [](json &j){
       Vec3 v;
       v(X) = j[0];
@@ -798,6 +881,9 @@ public:
     for (auto &p : particles) {
       auto particle = j[i++];
       p = Particle(unserializeVec(particle["x"]), unserializeVec(particle["v"]));
+#if DBG_TRACK_PARTICLES
+      p.track = false; // not serialized
+#endif
     }
   }
 }; // Serializer
@@ -815,6 +901,9 @@ public:
     }
   }
   static void evolvePhysically() {
+    // record in history
+    history.begin(str(boost::format("evolve %1% particles, numCycles=%2%") % Ncreate % numCycles));
+    // evolve
     uint64_t cpuCycles0 = xasm::getCpuCycles();
 #if DBG_SAVE_IMAGES
     imageSaver.save(0./*t*/, 5/*digits in time*/);
@@ -853,6 +942,8 @@ public:
                << std::endl;
       }
     }
+    // record in history
+    history.end();
   }
 private:
   static void moveIterateByParticle() { // faster when occupancy percentage is low
