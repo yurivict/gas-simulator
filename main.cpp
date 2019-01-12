@@ -31,6 +31,12 @@
 #include "Vec3.h"
 
 //
+// TODO
+// * gravity
+// * thermal flow
+//
+
+//
 // types
 //
 
@@ -40,11 +46,15 @@ typedef double Float;
 // physics constants and laws
 //
 
+namespace PhysicsConsts {
+
 static constexpr Float Na = 6.022e+23;  // Avogadro constant
 static constexpr Float R = 8.3144598;   // 8.3144598(48) in kg m² s⁻² K−1 mol−1 , see https://en.wikipedia.org/wiki/Gas_constant
 static constexpr Float k = R/Na;        // Boltzmann constant, see https://en.wikipedia.org/wiki/Boltzmann_constant
 static constexpr Float Troom = 293.15;  // room temperature in Kelvins: 20°C=293.15K
 static constexpr Float Patm = 101325;   // 101.325 kPa
+
+}; // PhysicsConsts
 
 // quick gas computations:
 // Vmol(0°C)  = 1mol*R*T=273.15K/101325 ≈ 0.0224m³ = 22.4dm³
@@ -125,8 +135,8 @@ unsigned constexpr lim1(unsigned i) {
   return i >= 1 ? i : 1;
 }
 
-static Float constexpr temperatureToEnergy(Float T) {return k*T;}
-static Float constexpr energyToTemperature(Float E) {return E/k;}
+static Float constexpr temperatureToEnergy(Float T) {return PhysicsConsts::k*T;}
+static Float constexpr energyToTemperature(Float E) {return E/PhysicsConsts::k;}
 
 }; // constexpr_funcs
 
@@ -178,14 +188,13 @@ static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 static unsigned numCycles;
 static unsigned cyclePrintPeriod; // how often to print the cycle
-static constexpr Float Teff = Troom;  // effective temperature (same as default temperature)
-static constexpr Float Vthermal = constexpr_funcs::sqrt((k*Teff)*2/m);  // thermal velocity
+static constexpr Float Teff = PhysicsConsts::Troom;  // effective temperature (same as default temperature)
+static constexpr Float Vthermal = constexpr_funcs::sqrt((PhysicsConsts::k*Teff)*2/m);  // thermal velocity
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
 static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
 static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
-static constexpr Float initE1 = constexpr_funcs::temperatureToEnergy(Troom)*0.95;
-static constexpr Float initE2 = constexpr_funcs::temperatureToEnergy(Troom)*1.05;
-static constexpr std::array<Float,2> energyLimits = {{0., 2.*initE2}}; // consider energies up to (..energyUpTo)
+static constexpr Float initE1 = constexpr_funcs::temperatureToEnergy(PhysicsConsts::Troom)*0.95;
+static constexpr Float initE2 = constexpr_funcs::temperatureToEnergy(PhysicsConsts::Troom)*1.05;
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 #if DBG_SAVE_IMAGES
@@ -649,7 +658,7 @@ public:
     //return uniformEnergy(generator);
 
     // more dissipated pattern
-    return constexpr_funcs::temperatureToEnergy(Troom)*(boolean() ? 0.5 : 1.5);
+    return constexpr_funcs::temperatureToEnergy(PhysicsConsts::Troom)*(boolean() ? 0.5 : 1.5);
   }
   auto particlePair() {
     unsigned i1, i2;
@@ -712,6 +721,7 @@ static void generateParticles() {
 }
 
 static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
+  std::array<Float,2> energyLimits = {{0., 6.*initE2}}; // TODO replace the ad-hoc 6. with the analytical expression based on the percentage of ignored particles
   Float minV = Particle::energyToVelocity(energyLimits[0]);
   Float maxV = Particle::energyToVelocity(energyLimits[1]);
   Float deltaV = (maxV - minV)/NumOutputBuckets;
@@ -1078,7 +1088,7 @@ int mainGuarded(int argc, char *argv[]) {
                       << std::endl;
   AOut() << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
                      << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
-                     << " P/Patm (at Troom)=" << ((Ncreate/Na)*R*Troom/(SZ(X)*SZ(Y)*SZ(Z))/Patm)
+                     << " P/Patm (at Troom)=" << ((Ncreate/PhysicsConsts::Na)*PhysicsConsts::R*PhysicsConsts::Troom/(SZ(X)*SZ(Y)*SZ(Z))/PhysicsConsts::Patm)
                      << std::endl;
 
   //
@@ -1108,7 +1118,7 @@ int mainGuarded(int argc, char *argv[]) {
   {
     auto energy = totalEnergy(particles);
     std::cout << "log(init): energy(before)=" << energy
-                        << " temperature(before)=" << energy/Ncreate/k
+                        << " temperature(before)=" << energy/Ncreate/PhysicsConsts::k
                         << " numCycles=" << numCycles
                         << std::endl;
   }
@@ -1128,7 +1138,7 @@ int mainGuarded(int argc, char *argv[]) {
     auto energy = totalEnergy(particles);
     std::cout << "log(fini): energy(after)=" << energy << std::endl;
     std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N
-                          << " temperature(after)=" << energy/Ncreate/k
+                          << " temperature(after)=" << energy/Ncreate/PhysicsConsts::k
                           << " collisions(PP)=" << formatUInt64(statsNumCollisionsPP)
                           << " collisions(PW)=" << formatUInt64(statsNumCollisionsPW)
                           << std::endl;
