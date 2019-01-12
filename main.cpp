@@ -1172,17 +1172,17 @@ int mainGuarded(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
   try {
     return mainGuarded(argc, argv);
-  } catch (cxxopts::OptionException e) {
-    std::cerr << "Option parsing error: " << e.what() << std::endl;
+  } catch (cxxopts::OptionException const& e) {
+    std::cerr << "option parsing error: " << e.what() << std::endl;
     return 1;
-  } catch (std::ifstream::failure e) {
-    std::cerr << "File error: " << e.what() << std::endl;
+  } catch (std::ifstream::failure const& e) {
+    std::cerr << "file error: " << e.what() << std::endl;
     return 1;
-  } catch (nlohmann::json::parse_error e) {
+  } catch (nlohmann::json::exception const& e) {
     std::cerr << "json error: " << e.what() << std::endl;
     return 1;
   } catch (std::exception const& e) {
-    std::cerr << "Unknown exception of type '" << typeid(e).name() << "' caught" << std::endl;
+    std::cerr << "unknown exception of type '" << typeid(e).name() << "' caught: " << e.what() << std::endl;
     return 1;
   }
 }
