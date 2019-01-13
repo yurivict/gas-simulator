@@ -187,7 +187,6 @@ static constexpr Float SZ(int i) {return SZa[i-1];}
 static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 static unsigned numCycles;
-static unsigned cyclePrintPeriod; // how often to print the cycle
 static constexpr Float Teff = PhysicsConsts::Troom;  // effective temperature (same as default temperature)
 static constexpr Float Vthermal = constexpr_funcs::sqrt((PhysicsConsts::k*Teff)*2/m);  // thermal velocity
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
@@ -738,7 +737,7 @@ static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncre
       continue;
     unsigned bucketNo = (V - minV)/deltaV;
     if (bucketNo >= NumOutputBuckets)
-      continue; // discard the out-of-range energy
+      continue; // discard out-of-range particles
     buckets[bucketNo].cnt++;
   }
 
@@ -910,17 +909,19 @@ public:
       transferPercentageOfEnergy(particles[pp[0]-1], particles[pp[1]-1], InteractionPct);
     }
   }
-  static void evolvePhysically() {
+  template<typename FnBefore, typename FnAfter>
+  static void evolvePhysically(FnBefore &&fnBeforeCycle, FnAfter &&fnAfterCycle) {
     // record in history
     history.begin(str(boost::format("evolve %1% particles, numCycles=%2%") % Ncreate % numCycles));
     // evolve
-    uint64_t cpuCycles0 = xasm::getCpuCycles();
 #if DBG_SAVE_IMAGES
     imageSaver.save(0./*t*/, 5/*digits in time*/);
 #endif
     // evolve
     Float t = 0.;
-    for (unsigned cycle = 0; cycle < numCycles; cycle++) {
+    for (unsigned cycle = 1; cycle <= numCycles; cycle++) {
+      fnBeforeCycle(cycle);
+
       //
       // move
       //
@@ -932,7 +933,6 @@ public:
       //
       // iter-particle collisions
       //
-      auto prevStatsNumCollisions = statsNumCollisionsPP;
       Iterate::ThroughOverlaps([](Particle *p1, Particle *p2) {
         assert(p1->collisionCourse(*p2)); // overshoot the center due to too high speed?
         p1->collide(*p2);
@@ -941,16 +941,8 @@ public:
 #if DBG_SAVE_IMAGES
       imageSaver.save(t, 5/*digits in time*/);
 #endif
-      // print tick and stats
-      if ((cycle+1) % cyclePrintPeriod == 0) {
-        uint64_t cpuCyclesNow = xasm::getCpuCycles();
-        AOut() << "tick#" << cycle+1 << ":evolvePhysically:"
-               << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesNow - cpuCycles0)/uint64_t(cycle+1))
-               << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisions) << ")"
-               << " statsNumCollisionsPW=" << statsNumCollisionsPW
-               << " statsNumBucketMoves=" << statsNumBucketMoves
-               << std::endl;
-      }
+      // cycle is done: allow the caller to perform custom actions
+      fnAfterCycle(cycle);
     }
     // record in history
     history.end();
@@ -1048,7 +1040,8 @@ int mainGuarded(int argc, char *argv[]) {
     ("o,output",  "Write the final particle state into this file (default would be set to particles-{time}.json)", cxxopts::value<std::string>()->default_value(
       str(boost::format("particles-%1%.json") % std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count())))
     ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
-    ("p,print",  "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
+    ("p,print",   "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
+    ("b,buckets", "How frequently to print buckets (default is 0, which means print only in the end)", cxxopts::value<unsigned>()->default_value("0"))
 #if DBG_TRACK_PARTICLES
     ("t,track",   "Track particles: 1-based, colon-separated values", cxxopts::value<std::string>())
       // could use std::vector<unsigned> here to do '-t pno1 -t pno 2 ...', but maybe it's better (more compact) this way with colon-separated values
@@ -1060,7 +1053,8 @@ int mainGuarded(int argc, char *argv[]) {
   std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
   std::string optOutputFile = result["output"].as<std::string>();
   numCycles = result["cycles"].as<unsigned>();
-  cyclePrintPeriod = result["print"].as<unsigned>();
+  unsigned cyclePrintPeriod = result["print"].as<unsigned>();
+  unsigned cycleWriteBuckets = result["buckets"].as<unsigned>();
 #if DBG_TRACK_PARTICLES
   std::vector<unsigned> optTrack;
   if (result.count("track") > 0)
@@ -1128,8 +1122,36 @@ int mainGuarded(int argc, char *argv[]) {
   //
   if (0)
     Evolver::evolvePairwiseVelocity();
-  if (1)
-    Evolver::evolvePhysically();
+  if (1) {
+    unsigned prevStatsNumCollisionsPP = 0;
+    uint64_t cpuBeforeCycle = 0;
+    Evolver::evolvePhysically([&cpuBeforeCycle](unsigned cycle) {
+      cpuBeforeCycle = xasm::getCpuCycles();
+    }, [cyclePrintPeriod,cycleWriteBuckets,&prevStatsNumCollisionsPP,&cpuBeforeCycle](unsigned cycle) {
+      // print tick and stats
+      if (cycle%cyclePrintPeriod == 0) {
+        uint64_t cpuAfterCycles = xasm::getCpuCycles();
+        AOut() << "tick#" << cycle << ":evolvePhysically:"
+               << " avgCpuCyclesPerTick=" << formatUInt64((cpuAfterCycles - cpuBeforeCycle)/uint64_t(cycle))
+               << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisionsPP) << ")"
+               << " statsNumCollisionsPW=" << statsNumCollisionsPW
+               << " statsNumBucketMoves=" << statsNumBucketMoves
+               << std::endl;
+      }
+
+      // write buckets
+      if ((cycleWriteBuckets!=0 && cycle%cycleWriteBuckets==0) || cycle == numCycles) {
+        writeFile<DataBucket>(str(boost::format("buckets-%1%.txt") % cycle), particlesToBuckets(particles), [](const DataBucket &b) {
+          std::ostringstream os;
+          os << b.V << " " << b.cnt;
+          return os.str();
+        });
+      }
+
+      // save values for the next cycle
+      prevStatsNumCollisionsPP = statsNumCollisionsPP;
+    });
+  }
 
   //
   // final log & stats
@@ -1143,15 +1165,6 @@ int mainGuarded(int argc, char *argv[]) {
                           << " collisions(PW)=" << formatUInt64(statsNumCollisionsPW)
                           << std::endl;
   }
-
-  //
-  // output
-  //
-  writeFile<DataBucket>("buckets.txt", particlesToBuckets(particles), [](const DataBucket &b) {
-    std::ostringstream os;
-    os << b.V << " " << b.cnt;
-    return os.str();
-  });
 
   //
   // serialize for later reuse
