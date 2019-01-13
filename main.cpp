@@ -18,6 +18,7 @@
 #include <chrono>
 #include <ctime>
 #include <limits>
+#include <csignal>
 
 #include <cxxopts.hpp>
 #include <nlohmann/json.hpp>
@@ -208,6 +209,12 @@ static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaY = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
 #endif
+
+//
+// Misc variables
+//
+
+static bool signalOccurred = false;
 
 //
 // Stats of the run
@@ -1037,6 +1044,26 @@ int mainGuarded(int argc, char *argv[]) {
 #endif
 
   //
+  // local functions
+  //
+
+  auto fnSaveOutput = [](const std::string &fname) {
+    AOut() << "serializing to " << fname << " ..." << std::endl;
+    std::ofstream file;
+    file.open(fname, std::ofstream::out);
+    file << Serializer::serialize();
+    file.close();
+    AOut() << "done serializing to " << fname << " ..." << std::endl;
+  };
+  auto fnSaveBuckets = [](Count cycle) {
+    writeFile<DataBucket>(str(boost::format("buckets-cycle%1%.txt") % cycle), particlesToBuckets(particles), [](const DataBucket &b) {
+      std::ostringstream os;
+      os << b.V << " " << b.cnt;
+      return os.str();
+    });
+  };
+
+  //
   // cycles
   //
 
@@ -1141,6 +1168,12 @@ int mainGuarded(int argc, char *argv[]) {
   }
 
   //
+  // signal processing
+  //
+
+  std::signal(SIGHUP, [](int signum) { signalOccurred = true; });
+
+  //
   // evolve
   //
   if (0)
@@ -1151,7 +1184,7 @@ int mainGuarded(int argc, char *argv[]) {
     Evolver::evolvePhysically(numCycles, [&prevStatsNumCollisionsPP,&cpuCyclesBefore](unsigned cycle) {
       cpuCyclesBefore = xasm::getCpuCycles();
       prevStatsNumCollisionsPP = statsNumCollisionsPP;
-    }, [numCycles,cyclePrintPeriod,cycleWriteBuckets,&prevStatsNumCollisionsPP,&cpuCyclesBefore](unsigned cycle) {
+    }, [numCycles,cyclePrintPeriod,cycleWriteBuckets,&optOutputFile,&prevStatsNumCollisionsPP,&cpuCyclesBefore,fnSaveOutput,fnSaveBuckets](unsigned cycle) {
       // print tick and stats
       if (cycle%cyclePrintPeriod == 0) {
         Count cpuCyclesAfters = xasm::getCpuCycles();
@@ -1163,14 +1196,18 @@ int mainGuarded(int argc, char *argv[]) {
                << std::endl;
       }
 
-      // write buckets
-      if ((cycleWriteBuckets!=0 && cycle%cycleWriteBuckets==0) || cycle == numCycles) {
-        writeFile<DataBucket>(str(boost::format("buckets-%1%.txt") % cycle), particlesToBuckets(particles), [](const DataBucket &b) {
-          std::ostringstream os;
-          os << b.V << " " << b.cnt;
-          return os.str();
-        });
+      // save output if requested
+      bool savedOnSignal = false;
+      if (signalOccurred && cycle != numCycles) {
+        fnSaveOutput(str(boost::format("%1%.cycle%2%.json") % optOutputFile % cycle));
+        fnSaveBuckets(cycle);
+        signalOccurred = false;
+        savedOnSignal = true;
       }
+
+      // write buckets
+      if (!savedOnSignal && ((cycleWriteBuckets!=0 && cycle%cycleWriteBuckets==0) || cycle == numCycles))
+        fnSaveBuckets(cycle);
     });
   }
 
@@ -1191,14 +1228,7 @@ int mainGuarded(int argc, char *argv[]) {
   // serialize for later reuse
   //
 
-  {
-    std::cout << "serializing to " << optOutputFile << " ..." << std::endl;
-    std::ofstream file;
-    file.open(optOutputFile, std::ofstream::out);
-    file << Serializer::serialize();
-    file.close();
-    std::cout << "done serializing to " << optOutputFile << " ..." << std::endl;
-  }
+  fnSaveOutput(optOutputFile);
 
   //
   // cycles
