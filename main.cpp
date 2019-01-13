@@ -387,6 +387,7 @@ class History {
     std::string action;
     Tm tm1; // time it started
     Tm tm2; // time it ended
+    std::map<std::string,std::string> props; // arbitrary properties of the run
     auto serialize() const {
       auto tmToStr = [](Tm tm) {
         std::time_t tm_c = std::chrono::system_clock::to_time_t(tm);
@@ -400,6 +401,12 @@ class History {
       j["tm1-str"] = tmToStr(tm1);
       j["tm2"] = std::chrono::duration_cast<std::chrono::milliseconds>(tm2.time_since_epoch()).count();
       j["tm2-str"] = tmToStr(tm2);
+      if (!props.empty()) {
+        auto jprops = json::object();
+        for (auto const &kv : props)
+          jprops[kv.first] = kv.second;
+        j["props"] = jprops;
+      }
       return j;
     }
     static Record unserialize(const json &j) {
@@ -407,6 +414,11 @@ class History {
       rec.action = j["action"];
       rec.tm1 = Tm(std::chrono::milliseconds(j["tm1"]));
       rec.tm2 = Tm(std::chrono::milliseconds(j["tm2"]));
+      if (j.find("props") != j.end()) {
+        auto jprops = j["props"];
+        for (auto it = jprops.begin(), ite = jprops.end(); it != ite; it++)
+          rec.props[it.key()] = it.value();
+      }
       return rec;
     }
     friend class History;
@@ -420,6 +432,9 @@ public:
     rec.tm1 = std::chrono::system_clock::now();
     lst.push_back(rec);
   }
+  void addProperty(const std::string &key, const std::string &val) {
+    lst.rbegin()->props[key] = val;
+  }
   void end() {
     lst.rbegin()->tm2 = std::chrono::system_clock::now();
   }
@@ -431,9 +446,8 @@ public:
   }
   static History unserialize(const json &j) {
     History h;
-    for (auto jr : j) {
+    for (auto jr : j)
       h.lst.push_back(Record::unserialize(jr));
-    }
     return h;
   }
 }; // History
@@ -952,6 +966,8 @@ public:
       fnAfterCycle(cycle);
     }
     // record in history
+    history.addProperty("numCycles", str(boost::format("%1%") % numCycles));
+    history.addProperty("dt", str(boost::format("%1%") % dt));
     history.end();
   }
 private:
