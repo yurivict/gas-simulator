@@ -58,6 +58,15 @@ static constexpr Float Patm = 101325;   // 101.325 kPa
 
 }; // PhysicsConsts
 
+namespace PhysicsFormulas {
+
+using namespace PhysicsConsts;
+
+static Float constexpr energyToTemperature(Float E) {return E/k/(3./2.);}
+static Float constexpr temperatureToEnergy(Float T) {return k*T*(3./2.);}
+
+}; // PhysicsFormulas
+
 // quick gas computations:
 // Vmol(0°C)  = 1mol*R*T=273.15K/101325 ≈ 0.0224m³ = 22.4dm³
 // Vmol(20°C) = 1mol*R*T=293.15K/101325 ≈ 0.0241m³ = 24.1dm³
@@ -137,14 +146,11 @@ unsigned constexpr lim1(unsigned i) {
   return i >= 1 ? i : 1;
 }
 
-static Float constexpr temperatureToEnergy(Float T) {return PhysicsConsts::k*T;}
-static Float constexpr energyToTemperature(Float E) {return E/PhysicsConsts::k;}
-
 }; // constexpr_funcs
 
 namespace xasm {
 
-  static inline CpuCycles getCpuCycles(){
+  static inline CpuCycles getCpuCycles() {
     unsigned int lo,hi;
     __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
     return ((CpuCycles)hi << 32) | lo;
@@ -174,7 +180,7 @@ static std::string formatUInt64(uint64_t x) {
 
 // Ideal gas law: https://en.wikipedia.org/wiki/Ideal_gas_law
 // PV = nRT    // n is number of moles
-// E = kT      // relation between the average kinetic energy and temperature
+// E = ½mv² = 3/2 kT      // relation between the average kinetic energy and temperature
 
 //
 // params
@@ -189,12 +195,12 @@ static constexpr Float SZ(int i) {return SZa[i-1];}
 static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
 static constexpr Float Teff = PhysicsConsts::Troom;  // effective temperature (same as default temperature)
-static constexpr Float Vthermal = constexpr_funcs::sqrt((PhysicsConsts::k*Teff)*2/m);  // thermal velocity
+static constexpr Float Vthermal = constexpr_funcs::sqrt(PhysicsFormulas::temperatureToEnergy(Teff)*2/m);  // thermal velocity
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
 static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
 static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
-static constexpr Float initE1 = constexpr_funcs::temperatureToEnergy(PhysicsConsts::Troom)*0.95;
-static constexpr Float initE2 = constexpr_funcs::temperatureToEnergy(PhysicsConsts::Troom)*1.05;
+static constexpr Float initE1 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Troom)*0.95;
+static constexpr Float initE2 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Troom)*1.05;
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 #if DBG_SAVE_IMAGES
@@ -232,7 +238,7 @@ public: // methods
   }
   ~Particle() { }
   Float energy() const {
-    return m*(v*v)/2;
+    return m*v.len2()/2;
   }
   Float velocity() const {
     return v.len();
@@ -658,7 +664,7 @@ public:
     //return uniformEnergy(generator);
 
     // more dissipated pattern
-    return constexpr_funcs::temperatureToEnergy(PhysicsConsts::Troom)*(boolean() ? 0.5 : 1.5);
+    return PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Troom)*(boolean() ? 0.5 : 1.5);
   }
   auto particlePair() {
     unsigned i1, i2;
@@ -1113,7 +1119,7 @@ int mainGuarded(int argc, char *argv[]) {
   {
     auto energy = totalEnergy(particles);
     std::cout << "log(init): energy(before)=" << energy
-                        << " temperature(before)=" << energy/Ncreate/PhysicsConsts::k
+                        << " temperature(before)=" << PhysicsFormulas::energyToTemperature(energy/Ncreate)
                         << " numCycles=" << numCycles
                         << std::endl;
   }
@@ -1159,7 +1165,7 @@ int mainGuarded(int argc, char *argv[]) {
     auto energy = totalEnergy(particles);
     std::cout << "log(fini): energy(after)=" << energy << std::endl;
     std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N
-                          << " temperature(after)=" << energy/Ncreate/PhysicsConsts::k
+                          << " temperature(after)=" << PhysicsFormulas::energyToTemperature(energy/Ncreate)
                           << " collisions(PP)=" << formatUInt64(statsNumCollisionsPP)
                           << " collisions(PW)=" << formatUInt64(statsNumCollisionsPW)
                           << std::endl;
