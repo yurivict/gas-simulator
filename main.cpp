@@ -790,12 +790,20 @@ static void transferPercentageOfEnergy(Particle &p1, Particle &p2, Float frac) {
   //AOut() << "transferPercentageOfEnergy < p1.e=" << p1.energy() << " p2.e=" << p2.energy() << std::endl;
 }
 
-static Float totalEnergy(const std::array<Particle,Ncreate> &pp) {
+namespace ParticlesTotal {
+
+static Float energy() {
   Float e = 0.;
-  for (auto &p : pp)
+  for (auto &p : particles)
     e += p.energy();
   return e;
 }
+
+static Float temperature() {
+  return PhysicsFormulas::energyToTemperature(energy()/Ncreate);
+}
+
+}; // ParticlesTotal
 
 //
 // Images (save particles as an image for visual inspection)
@@ -941,6 +949,7 @@ public:
   static void evolvePhysically(Count numCycles, FnBefore &&fnBeforeCycle, FnAfter &&fnAfterCycle) {
     // record in history
     history.begin(str(boost::format("evolve %1% particles, numCycles=%2%") % Ncreate % numCycles));
+    history.addProperty("temperatureBefore",  str(boost::format("%1%") % ParticlesTotal::temperature()));
     // evolve
 #if DBG_SAVE_IMAGES
     imageSaver.save(0./*t*/, 5/*digits in time*/);
@@ -973,8 +982,9 @@ public:
       fnAfterCycle(cycle);
     }
     // record in history
-    history.addProperty("numCycles", str(boost::format("%1%") % numCycles));
-    history.addProperty("dt", str(boost::format("%1%") % dt));
+    history.addProperty("numCycles",         str(boost::format("%1%") % numCycles));
+    history.addProperty("dt",                str(boost::format("%1%") % dt));
+    history.addProperty("temperatureAfter",  str(boost::format("%1%") % ParticlesTotal::temperature()));
     history.end();
   }
 private:
@@ -1160,7 +1170,7 @@ int mainGuarded(int argc, char *argv[]) {
   // initial log
   //
   {
-    auto energy = totalEnergy(particles);
+    auto energy = ParticlesTotal::energy();
     std::cout << "log(init): energy(before)=" << energy
                         << " temperature(before)=" << PhysicsFormulas::energyToTemperature(energy/Ncreate)
                         << " numCycles=" << numCycles
@@ -1180,16 +1190,15 @@ int mainGuarded(int argc, char *argv[]) {
     Evolver::evolvePairwiseVelocity();
   if (1) {
     unsigned prevStatsNumCollisionsPP = 0;
-    CpuCycles cpuCyclesBefore = 0;
-    Evolver::evolvePhysically(numCycles, [&prevStatsNumCollisionsPP,&cpuCyclesBefore](unsigned cycle) {
-      cpuCyclesBefore = xasm::getCpuCycles();
+    auto cpuCyclesBefore = xasm::getCpuCycles();
+    Evolver::evolvePhysically(numCycles, [&prevStatsNumCollisionsPP](unsigned cycle) {
       prevStatsNumCollisionsPP = statsNumCollisionsPP;
     }, [numCycles,cyclePrintPeriod,cycleWriteBuckets,&optOutputFile,&prevStatsNumCollisionsPP,&cpuCyclesBefore,fnSaveOutput,fnSaveBuckets](unsigned cycle) {
       // print tick and stats
       if (cycle%cyclePrintPeriod == 0) {
-        Count cpuCyclesAfters = xasm::getCpuCycles();
+        Count cpuAtCycle = xasm::getCpuCycles();
         AOut() << "tick#" << cycle << ":evolvePhysically:"
-               << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesAfters - cpuCyclesBefore)/Count(cycle))
+               << " avgCpuCyclesPerTick=" << formatUInt64((cpuAtCycle - cpuCyclesBefore)/Count(cycle))
                << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisionsPP) << ")"
                << " statsNumCollisionsPW=" << statsNumCollisionsPW
                << " statsNumBucketMoves=" << statsNumBucketMoves
@@ -1215,7 +1224,7 @@ int mainGuarded(int argc, char *argv[]) {
   // final log & stats
   //
   {
-    auto energy = totalEnergy(particles);
+    auto energy = ParticlesTotal::energy();
     std::cout << "log(fini): energy(after)=" << energy << std::endl;
     std::cout << "stats(fini): collisionsPerParticle(PP)=" << Float(statsNumCollisionsPP)/N
                           << " temperature(after)=" << PhysicsFormulas::energyToTemperature(energy/Ncreate)
