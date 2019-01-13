@@ -200,8 +200,8 @@ static constexpr Float Vthermal = constexpr_funcs::sqrt(PhysicsFormulas::tempera
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
 static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
 static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
-static constexpr Float initE1 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Troom)*0.95;
-static constexpr Float initE2 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Troom)*1.05;
+static constexpr Float initE1 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Teff)*0.95;
+static constexpr Float initE2 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Teff)*1.05;
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 #if DBG_SAVE_IMAGES
@@ -685,7 +685,7 @@ public:
     //return uniformEnergy(generator);
 
     // more dissipated pattern
-    return PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Troom)*(boolean() ? 0.5 : 1.5);
+    return PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Teff)*(boolean() ? 0.5 : 1.5);
   }
   auto particlePair() {
     unsigned i1, i2;
@@ -1142,7 +1142,7 @@ int mainGuarded(int argc, char *argv[]) {
                       << std::endl;
   AOut() << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
                      << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
-                     << " P/Patm (at Troom)=" << ((Ncreate/PhysicsConsts::Na)*PhysicsConsts::R*PhysicsConsts::Troom/(SZ(X)*SZ(Y)*SZ(Z))/PhysicsConsts::Patm)
+                     << " P/Patm (at Teff)=" << ((Ncreate/PhysicsConsts::Na)*PhysicsConsts::R*PhysicsConsts::Teff/(SZ(X)*SZ(Y)*SZ(Z))/PhysicsConsts::Patm)
                      << std::endl;
 
   //
