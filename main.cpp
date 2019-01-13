@@ -19,6 +19,8 @@
 #include <ctime>
 #include <limits>
 #include <csignal>
+#include <exception>
+#include <stdexcept> // runtime_error
 
 #include <cxxopts.hpp>
 #include <nlohmann/json.hpp>
@@ -94,6 +96,15 @@ static ThreadPool *threadPool = nullptr; // static thread pool user by all code 
 //
 // helper classes
 //
+
+class exception : public std::exception {
+  std::runtime_error m;
+public:
+  exception(const std::string &newMsg) : m(newMsg) { } // we use exception directly so constructor is public
+  const char* what() const noexcept override {
+    return m.what();
+  }
+}; // exception
 
 class AOut : public std::ostringstream { // atomic message printer
 public:
@@ -200,8 +211,8 @@ static constexpr Float Vthermal = constexpr_funcs::sqrt(PhysicsFormulas::tempera
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
 static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
 static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
-static constexpr Float initE1 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Teff)*0.95;
-static constexpr Float initE2 = PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Teff)*1.05;
+static constexpr Float initE1 = PhysicsFormulas::temperatureToEnergy(Teff)*0.95;
+static constexpr Float initE2 = PhysicsFormulas::temperatureToEnergy(Teff)*1.05;
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 #if DBG_SAVE_IMAGES
@@ -222,6 +233,24 @@ static bool signalOccurred = false;
 static Count statsNumBucketMoves = 0;
 static Count statsNumCollisionsPP = 0;    // particle-particle collisions
 static Count statsNumCollisionsPW = 0;
+
+//
+// Distributions
+//
+/*
+namespace Distributions {
+namespace Maxwell {
+
+using namespace PhysicsConsts;
+
+static Float distributionPerVelocity(Float T, Float V) {
+  auto V2 = V*V;
+  return std::pow(m/(2*M_PI*k*T), 3./2.)*(4*M_PI*V2)*std::exp(-m*V2/(2*k*T));
+}
+
+}; // Maxwell
+}; // Distributions
+*/
 
 //
 // Classes
@@ -635,6 +664,7 @@ class Random {
   // types
   typedef std::uniform_real_distribution<Float> urdFloat;
   typedef std::uniform_int_distribution<unsigned> uidUnsigned;
+  typedef std::normal_distribution<Float> normFloat;
   // fields
   unsigned                                 seed;
   std::mt19937                             generator;
@@ -643,6 +673,7 @@ class Random {
   uidUnsigned  uniformUInt01;
   urdFloat     uniformCoord[3]; // per dimension
   urdFloat     uniformEnergy;
+  normFloat    normal;
 public:
   Random()
   : seed(std::chrono::system_clock::now().time_since_epoch().count()),
@@ -680,32 +711,34 @@ public:
   auto coord(unsigned idx) {
     return uniformCoord[idx](generator);
   }
-  auto energy() {
+  auto energyUniformArea() {
     // one area
-    //return uniformEnergy(generator);
-
+    return uniformEnergy(generator);
+  }
+  auto energySpike50_150() {
     // more dissipated pattern
-    return PhysicsFormulas::temperatureToEnergy(PhysicsConsts::Teff)*(boolean() ? 0.5 : 1.5);
+    return PhysicsFormulas::temperatureToEnergy(Teff)*(boolean() ? 0.5 : 1.5);
   }
   auto particlePair() {
     unsigned i1, i2;
     while ((i1 = uniform1N(generator)) == (i2 = uniform1N(generator))) { }
     return std::array<unsigned,2>({{i1,i2}});
   }
+  Vec3 maxwell3(Float sigma) {
+    return Vec3(sigma*normal(generator), sigma*normal(generator), sigma*normal(generator));
+  }
 }; // Random
 
 static Random rg;
 
-static void generateParticles() {
+template<typename VGen>
+static void generateParticles(VGen &&vgen) {
   // record in history
   history.begin(str(boost::format("generate %1% particles") % Ncreate));
 
   // TODO eliminate initial overlaps
-  auto genParticleEnergyRange = []() {
-    auto [sphX,sphY,sphZ] = rg.sphereCoords();
-    auto E = rg.energy();
-    auto V = Particle::energyToVelocity(E);
-    return Particle(Vec3(rg.coord(0), rg.coord(1), rg.coord(2)), Vec3(sphX*V, sphY*V, sphZ*V));
+  auto genParticleEnergyRange = [vgen]() {
+    return Particle(Vec3(rg.coord(0), rg.coord(1), rg.coord(2)), vgen());
   };
   for (Count i = 0; i < Ncreate; i++)
     particles[i] = genParticleEnergyRange();
@@ -1096,19 +1129,23 @@ int mainGuarded(int argc, char *argv[]) {
 
   cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
   options.add_options()
-    ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
-    ("o,output",  "Write the final particle state into this file (default would be set to particles-{time}.json)", cxxopts::value<std::string>()->default_value(
+    ("d,distribution", "Velocity distribution used to generate particles, and to inject energy (maxwell,spike-50-150,uniform-area)", cxxopts::value<std::string>()->default_value("maxwell"))
+    ("r,restart",      "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
+    ("o,output",       "Write the final particle state into this file (default would be set to particles-{time}.json)", cxxopts::value<std::string>()->default_value(
       str(boost::format("particles-%1%.json") % std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count())))
-    ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<Count>()->default_value("4000"))
-    ("p,print",   "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
-    ("b,buckets", "How frequently to print buckets (default is 0, which means print only in the end)", cxxopts::value<unsigned>()->default_value("0"))
+    ("c,cycles",       "How many cycles to perform (default is 4000)", cxxopts::value<Count>()->default_value("4000"))
+    ("p,print",        "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
+    ("b,buckets",      "How frequently to print buckets (default is 0, which means print only in the end)", cxxopts::value<unsigned>()->default_value("0"))
 #if DBG_TRACK_PARTICLES
-    ("t,track",   "Track particles: 1-based, colon-separated values", cxxopts::value<std::string>())
+    ("t,track",        "Track particles: 1-based, colon-separated values", cxxopts::value<std::string>())
       // could use std::vector<unsigned> here to do '-t pno1 -t pno 2 ...', but maybe it's better (more compact) this way with colon-separated values
 #endif
     ;
 
   auto result = options.parse(argc, argv);
+  std::string optDistribution = result["distribution"].as<std::string>();
+  if (optDistribution!="maxwell" && optDistribution!="spike-50-150" && optDistribution!="uniform-area")
+    throw exception(str(boost::format("unknown velocity distribution '%1%' supplied to --generate argument") % optDistribution));
   bool optRestart = result.count("restart") > 0;
   std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
   std::string optOutputFile = result["output"].as<std::string>();
@@ -1142,7 +1179,7 @@ int mainGuarded(int argc, char *argv[]) {
                       << std::endl;
   AOut() << "stats(init): spacePercentageOccupiedByParticles=" << Ncreate*(4./3.*M_PI*std::pow(particleRadius,3))/(SZ(X)*SZ(Y)*SZ(Z))*100. << "%"
                      << " avgParticlePerBucket=" << Float(Ncreate)/(ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2])
-                     << " P/Patm (at Teff)=" << ((Ncreate/PhysicsConsts::Na)*PhysicsConsts::R*PhysicsConsts::Teff/(SZ(X)*SZ(Y)*SZ(Z))/PhysicsConsts::Patm)
+                     << " P/Patm (at Teff)=" << ((Ncreate/PhysicsConsts::Na)*PhysicsConsts::R*Teff/(SZ(X)*SZ(Y)*SZ(Z))/PhysicsConsts::Patm)
                      << std::endl;
 
   //
@@ -1158,7 +1195,26 @@ int mainGuarded(int argc, char *argv[]) {
       ParticlesIndex::instance.add(&p);
     std::cout << "done unserializing from " << optRestartFile << " ..." << std::endl;
   } else {
-    generateParticles();
+    if (optDistribution == "maxwell") {
+      Float sigma = std::sqrt(PhysicsConsts::k*Teff/m);
+      generateParticles([sigma]() {
+        return rg.maxwell3(sigma);
+      });
+    } else if (optDistribution == "spike-50-150") {
+      generateParticles([]() {
+        auto [sphX,sphY,sphZ] = rg.sphereCoords();
+        auto E = rg.energySpike50_150();
+        auto V = Particle::energyToVelocity(E);
+        return Vec3(sphX*V, sphY*V, sphZ*V);
+      });
+    } else if (optDistribution == "area") {
+      generateParticles([]() {
+        auto [sphX,sphY,sphZ] = rg.sphereCoords();
+        auto E = rg.energyUniformArea();
+        auto V = Particle::energyToVelocity(E);
+        return Vec3(sphX*V, sphY*V, sphZ*V);
+      });
+    }
   }
 #if DBG_TRACK_PARTICLES
   for (auto track : optTrack)
@@ -1238,6 +1294,8 @@ int mainGuarded(int argc, char *argv[]) {
   //
 
   fnSaveOutput(optOutputFile);
+  if (numCycles == 0)
+    fnSaveBuckets(0);
 
   //
   // cycles
@@ -1263,6 +1321,9 @@ int main(int argc, char *argv[]) {
     return 1;
   } catch (nlohmann::json::exception const& e) {
     std::cerr << "json error: " << e.what() << std::endl;
+    return 1;
+  } catch (exception const& e) {
+    std::cerr << "application error: " << e.what() << std::endl;
     return 1;
   } catch (std::exception const& e) {
     std::cerr << "unknown exception of type '" << typeid(e).name() << "' caught: " << e.what() << std::endl;
