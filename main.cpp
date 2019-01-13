@@ -41,6 +41,8 @@
 //
 
 typedef double Float;
+typedef uint64_t Count;
+typedef uint64_t CpuCycles;
 
 //
 // physics constants and laws
@@ -142,10 +144,10 @@ static Float constexpr energyToTemperature(Float E) {return E/PhysicsConsts::k;}
 
 namespace xasm {
 
-  static inline uint64_t getCpuCycles(){
+  static inline CpuCycles getCpuCycles(){
     unsigned int lo,hi;
     __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
-    return ((uint64_t)hi << 32) | lo;
+    return ((CpuCycles)hi << 32) | lo;
   }
 
 }; // xasm
@@ -177,8 +179,8 @@ static std::string formatUInt64(uint64_t x) {
 //
 // params
 //
-static constexpr unsigned N = 1000000;
-static constexpr unsigned Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
+static constexpr Count N = 1000000;
+static constexpr Count Ncreate = N; // (DEBUG) should be =N, but allows to override the number of particles for debugging
 static constexpr Float particlesPerBucket = 1.; // average number of particles per bucket. Performance drops when the number is >1 (like 2)
 static constexpr Float m = 6.646476410e-27; // He atomic mass in kg
 static constexpr unsigned Pairwise_RandomizeRounds = 1500*N;
@@ -186,7 +188,6 @@ static constexpr Float SZa[3] = {4e-6,1e-7,1e-7};    // size of the box, when th
 static constexpr Float SZ(int i) {return SZa[i-1];}
 static constexpr Float particleRadius = 140e-12; // He atomic radius
 static constexpr Float particleRadius2 = (2*particleRadius)*(2*particleRadius);
-static unsigned numCycles;
 static constexpr Float Teff = PhysicsConsts::Troom;  // effective temperature (same as default temperature)
 static constexpr Float Vthermal = constexpr_funcs::sqrt((PhysicsConsts::k*Teff)*2/m);  // thermal velocity
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
@@ -205,9 +206,9 @@ static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particl
 //
 // Stats of the run
 //
-static unsigned statsNumBucketMoves = 0;
-static unsigned statsNumCollisionsPP = 0;    // particle-particle collisions
-static unsigned statsNumCollisionsPW = 0;
+static Count statsNumBucketMoves = 0;
+static Count statsNumCollisionsPP = 0;    // particle-particle collisions
+static Count statsNumCollisionsPW = 0;
 
 //
 // Classes
@@ -589,7 +590,7 @@ void Particle::move(const Vec3 &newPos) {
 class DataBucket {
 public:
   Float    V;    // velocity
-  unsigned cnt;  // how many particles fall into this bucket
+  Count    cnt;  // how many particles fall into this bucket
   DataBucket(Float newV) : V(newV), cnt(0) { }
 }; // DataBucket
 
@@ -679,7 +680,7 @@ static void generateParticles() {
     auto V = Particle::energyToVelocity(E);
     return Particle(Vec3(rg.coord(0), rg.coord(1), rg.coord(2)), Vec3(sphX*V, sphY*V, sphZ*V));
   };
-  for (unsigned i = 0; i < Ncreate; i++)
+  for (Count i = 0; i < Ncreate; i++)
     particles[i] = genParticleEnergyRange();
 
 #if DBG_TRACK_PARTICLES
@@ -910,7 +911,7 @@ public:
     }
   }
   template<typename FnBefore, typename FnAfter>
-  static void evolvePhysically(FnBefore &&fnBeforeCycle, FnAfter &&fnAfterCycle) {
+  static void evolvePhysically(Count numCycles, FnBefore &&fnBeforeCycle, FnAfter &&fnAfterCycle) {
     // record in history
     history.begin(str(boost::format("evolve %1% particles, numCycles=%2%") % Ncreate % numCycles));
     // evolve
@@ -919,7 +920,7 @@ public:
 #endif
     // evolve
     Float t = 0.;
-    for (unsigned cycle = 1; cycle <= numCycles; cycle++) {
+    for (Count cycle = 1; cycle <= numCycles; cycle++) {
       fnBeforeCycle(cycle);
 
       //
@@ -960,15 +961,15 @@ private:
   }
 #if USE_PARALLELISM
   static void moveIterateByParticlePar() {
-    unsigned ie = particles.size(), di = ie / NCPU;
-    for (unsigned idx1 = 0, cpu = 1; idx1 < ie; cpu++) {
-      unsigned idx2 = idx1 + di;
+    Count ie = particles.size(), di = ie / NCPU;
+    for (Count idx1 = 0, cpu = 1; idx1 < ie; cpu++) {
+      Count idx2 = idx1 + di;
       if (idx2 > ie)
         idx2 = ie;
       if (cpu == NCPU && idx2 < ie)
         idx2 = ie;
       threadPool->doJob([idx1, idx2]() {
-        for (unsigned i = idx1; i < idx2; i++)
+        for (Count i = idx1; i < idx2; i++)
           particles[i].move(dt);
       }); 
       idx1 = idx2;
@@ -1024,12 +1025,12 @@ int mainGuarded(int argc, char *argv[]) {
   //
 
 #if DBG_TRACK_PARTICLES
-  auto splitToUInt = [](std::string strToSplit, char delimeter) {
+  auto splitToUInt64 = [](std::string strToSplit, char delimeter) {
     std::stringstream ss(strToSplit);
     std::string item;
-    std::vector<unsigned> split;
+    std::vector<Count> split;
     while (std::getline(ss, item, delimeter))
-       split.push_back(std::stoul(item));
+       split.push_back(std::stoull(item));
     return split;
   };
 #endif
@@ -1039,7 +1040,7 @@ int mainGuarded(int argc, char *argv[]) {
     ("r,restart", "Restart using the snapshot of particle positions/velocities", cxxopts::value<std::string>())
     ("o,output",  "Write the final particle state into this file (default would be set to particles-{time}.json)", cxxopts::value<std::string>()->default_value(
       str(boost::format("particles-%1%.json") % std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count())))
-    ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<unsigned>()->default_value("4000"))
+    ("c,cycles",  "How many cycles to perform (default is 4000)", cxxopts::value<Count>()->default_value("4000"))
     ("p,print",   "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
     ("b,buckets", "How frequently to print buckets (default is 0, which means print only in the end)", cxxopts::value<unsigned>()->default_value("0"))
 #if DBG_TRACK_PARTICLES
@@ -1052,13 +1053,13 @@ int mainGuarded(int argc, char *argv[]) {
   bool optRestart = result.count("restart") > 0;
   std::string optRestartFile = optRestart ? result["restart"].as<std::string>() : "";
   std::string optOutputFile = result["output"].as<std::string>();
-  numCycles = result["cycles"].as<unsigned>();
+  Count numCycles = result["cycles"].as<Count>();
   unsigned cyclePrintPeriod = result["print"].as<unsigned>();
   unsigned cycleWriteBuckets = result["buckets"].as<unsigned>();
 #if DBG_TRACK_PARTICLES
-  std::vector<unsigned> optTrack;
+  std::vector<Count> optTrack;
   if (result.count("track") > 0)
-    optTrack = splitToUInt(result["track"].as<std::string>(), ':');
+    optTrack = splitToUInt64(result["track"].as<std::string>(), ':');
   { // assign pno in particles
     unsigned pno = 1;
     for (auto &p : particles)
@@ -1124,15 +1125,16 @@ int mainGuarded(int argc, char *argv[]) {
     Evolver::evolvePairwiseVelocity();
   if (1) {
     unsigned prevStatsNumCollisionsPP = 0;
-    uint64_t cpuBeforeCycle = 0;
-    Evolver::evolvePhysically([&cpuBeforeCycle](unsigned cycle) {
-      cpuBeforeCycle = xasm::getCpuCycles();
-    }, [cyclePrintPeriod,cycleWriteBuckets,&prevStatsNumCollisionsPP,&cpuBeforeCycle](unsigned cycle) {
+    CpuCycles cpuCyclesBefore = 0;
+    Evolver::evolvePhysically(numCycles, [&prevStatsNumCollisionsPP,&cpuCyclesBefore](unsigned cycle) {
+      cpuCyclesBefore = xasm::getCpuCycles();
+      prevStatsNumCollisionsPP = statsNumCollisionsPP;
+    }, [numCycles,cyclePrintPeriod,cycleWriteBuckets,&prevStatsNumCollisionsPP,&cpuCyclesBefore](unsigned cycle) {
       // print tick and stats
       if (cycle%cyclePrintPeriod == 0) {
-        uint64_t cpuAfterCycles = xasm::getCpuCycles();
+        Count cpuCyclesAfters = xasm::getCpuCycles();
         AOut() << "tick#" << cycle << ":evolvePhysically:"
-               << " avgCpuCyclesPerTick=" << formatUInt64((cpuAfterCycles - cpuBeforeCycle)/uint64_t(cycle))
+               << " avgCpuCyclesPerTick=" << formatUInt64((cpuCyclesAfters - cpuCyclesBefore)/Count(cycle))
                << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisionsPP) << ")"
                << " statsNumCollisionsPW=" << statsNumCollisionsPW
                << " statsNumBucketMoves=" << statsNumBucketMoves
@@ -1147,9 +1149,6 @@ int mainGuarded(int argc, char *argv[]) {
           return os.str();
         });
       }
-
-      // save values for the next cycle
-      prevStatsNumCollisionsPP = statsNumCollisionsPP;
     });
   }
 
