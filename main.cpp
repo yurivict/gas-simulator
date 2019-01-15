@@ -20,6 +20,7 @@
 #include <limits>
 #include <csignal>
 #include <exception>
+#include <functional>
 #include <stdexcept> // runtime_error
 
 #include <cxxopts.hpp>
@@ -92,6 +93,22 @@ static ThreadPool *threadPool = nullptr; // static thread pool user by all code 
 #else
 #define TID ""
 #endif
+
+template<typename Tsrc, typename Tdst> Tdst convertType(const Tsrc &v);
+template<> std::string convertType<std::string,std::string>(const std::string &v) {return v;}
+template<> uint64_t convertType<std::string,uint64_t>(const std::string &v) {return std::stoull(v);}
+template<> Float convertType<std::string,Float>(const std::string &v) {return std::stod(v);}
+
+template<typename T>
+static std::vector<T> splitString(const std::string &strToSplit, char delimeter) {
+  std::stringstream ss(strToSplit);
+  std::string item;
+  std::vector<T> split;
+  while (std::getline(ss, item, delimeter))
+     split.push_back(convertType<std::string,T>(item));
+  return split;
+}
+
 
 //
 // helper classes
@@ -211,8 +228,6 @@ static constexpr Float Vthermal = constexpr_funcs::sqrt(PhysicsFormulas::tempera
 static constexpr Float Vcutoff = Vthermal*4.; // velocity over which there is a neglible number of particles XXX TODO 5. should be percentage estimate based
 static constexpr Float penetrationCoefficient = 0.3; // fraction of the particle radius that we allow to be penetrated at worst, considering Vcutoff
 static constexpr Float dt = particleRadius*penetrationCoefficient/Vcutoff;
-static constexpr Float initE1 = PhysicsFormulas::temperatureToEnergy(Teff)*0.95;
-static constexpr Float initE2 = PhysicsFormulas::temperatureToEnergy(Teff)*1.05;
 static constexpr unsigned NumOutputBuckets = 200; // how many buckets we build
 static constexpr Float InteractionPct = 0.001; // how much energy is transferred
 #if DBG_SAVE_IMAGES
@@ -220,6 +235,9 @@ static constexpr std::array<Float,2> imageAreaX = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaY = {{0.45,0.55}};
 static constexpr std::array<Float,2> imageAreaZ = {{0.45,0.55}}; //{{0.5-particleRadius,0.5+particleRadius}};// {{0.45,0.55}};
 #endif
+
+// XXX XXX Where does this belong?
+static Float maxwellSigma(Float T) {return std::sqrt(PhysicsConsts::k*T/m);}
 
 //
 // Misc variables
@@ -230,9 +248,14 @@ static bool signalOccurred = false;
 //
 // Stats of the run
 //
+#if USE_PARALLELISM
+static std::mutex statsLock;  // protects all but statsNumBucketMoves that is protected by ParticlesIndex::instanceLock
+#endif
 static Count statsNumBucketMoves = 0;
 static Count statsNumCollisionsPP = 0;    // particle-particle collisions
 static Count statsNumCollisionsPW = 0;
+static Count statsNumCollisionsPWtemp = 0; // PW collisions with temperature adjustment
+static Float statsWallDeltaEnergy = 0;     // how much energy is injected through the wall (see the 'temperature' option, negative value means that the energy is taken)
 
 //
 // Distributions
@@ -251,6 +274,13 @@ static Float distributionPerVelocity(Float T, Float V) {
 }; // Maxwell
 }; // Distributions
 */
+
+//
+// Wall functors
+//
+
+static Float wallFunctorElastic(Float v) {return -v;}
+static std::function<Float(Float)> wallFunctors[3][2];
 
 //
 // Classes
@@ -280,17 +310,17 @@ public: // methods
     return v.len();
   }
   void move(Float dt) {
-    auto collideWall = [](Float &partCoord, Float &partVelocity, Float wall1, Float wall2) {
+    auto collideWall = [](unsigned coord, Float &partCoord, Float &partVelocity, Float wall1, Float wall2) {
       bool collided = false;
       if (partCoord < wall1) {
         partCoord = wall1 + (wall1-partCoord);
-        partVelocity = -partVelocity;
+        partVelocity = wallFunctors[coord-1][0](partVelocity);
         statsNumCollisionsPW++;
         collided = true;
       }
       if (partCoord > wall2) {
         partCoord = wall2 - (partCoord-wall2);
-        partVelocity = -partVelocity;
+        partVelocity = wallFunctors[coord-1][1](partVelocity);
         statsNumCollisionsPW++;
         collided = true;
       }
@@ -300,9 +330,9 @@ public: // methods
     Vec3 pt(pos(X) + dt*v(X), pos(Y) + dt*v(Y), pos(Z) + dt*v(Z));
     // collide with walls
     bool collided = false;
-    collided |= collideWall(pt(X), v(X), 0.+particleRadius,SZ(X)-particleRadius);
-    collided |= collideWall(pt(Y), v(Y), 0.+particleRadius,SZ(Y)-particleRadius);
-    collided |= collideWall(pt(Z), v(Z), 0.+particleRadius,SZ(Z)-particleRadius);
+    collided |= collideWall(X, pt(X), v(X), 0.+particleRadius, SZ(X)-particleRadius);
+    collided |= collideWall(Y, pt(Y), v(Y), 0.+particleRadius, SZ(Y)-particleRadius);
+    collided |= collideWall(Z, pt(Z), v(Z), 0.+particleRadius, SZ(Z)-particleRadius);
 #if DBG_TRACK_PARTICLES
     if (track && collided)
       DBG_TRACK_PARTICLE_MSG(str(boost::format("particle#%1% collided with a wall") % pno)) // TODO report which wall
@@ -367,7 +397,9 @@ public:
   static constexpr Float SZdivNSpaceSlots[3] = {SZa[0]/NSpaceSlots[0], SZa[1]/NSpaceSlots[1], SZa[2]/NSpaceSlots[2]};
   // leads to a fractional average occupancy of the bucket, seems to be the choice leading to the fastest computation
   static ParticlesIndex instance;
+#if USE_PARALLELISM
   static std::mutex instanceLock;
+#endif
 private:
   std::array<std::array<std::array<Slot,NSpaceSlots[2]>,NSpaceSlots[1]>,NSpaceSlots[0]> index;
 public:
@@ -684,7 +716,7 @@ public:
     uniformCoord{urdFloat(0.0+particleRadius, SZ(X)-particleRadius),
                  urdFloat(0.0+particleRadius, SZ(Y)-particleRadius),
                  urdFloat(0.0+particleRadius, SZ(Z)-particleRadius)},
-    uniformEnergy(initE1, initE2)
+    uniformEnergy(PhysicsFormulas::temperatureToEnergy(Teff)*0.95, PhysicsFormulas::temperatureToEnergy(Teff)*1.05)
   { }
   auto rand01() {
     return uniformFloat01(generator);
@@ -726,6 +758,10 @@ public:
   }
   Vec3 maxwell3(Float sigma) {
     return Vec3(sigma*normal(generator), sigma*normal(generator), sigma*normal(generator));
+  }
+  Float maxwell1Plus(Float sigma) {
+    auto v = sigma*normal(generator);
+    return v >= 0 ? v : -v;
   }
 }; // Random
 
@@ -781,7 +817,7 @@ static void generateParticles(VGen &&vgen) {
 }
 
 static std::vector<DataBucket> particlesToBuckets(const std::array<Particle,Ncreate> &particles) {
-  std::array<Float,2> energyLimits = {{0., 6.*initE2}}; // TODO replace the ad-hoc 6. with the analytical expression based on the percentage of ignored particles
+  std::array<Float,2> energyLimits = {{0., 6.*PhysicsFormulas::temperatureToEnergy(Teff)}}; // TODO replace the ad-hoc 6. with the analytical expression based on the percentage of ignored particles
   Float minV = Particle::energyToVelocity(energyLimits[0]);
   Float maxV = Particle::energyToVelocity(energyLimits[1]);
   Float deltaV = (maxV - minV)/NumOutputBuckets;
@@ -1040,7 +1076,7 @@ private:
         idx2 = ie;
       if (cpu == NCPU && idx2 < ie)
         idx2 = ie;
-      threadPool->doJob([idx1, idx2]() {
+      threadPool->doJob([idx1,idx2]() {
         for (Count i = idx1; i < idx2; i++)
           particles[i].move(dt);
       }); 
@@ -1054,20 +1090,20 @@ private:
     for (auto &p : particles)
       p.move(dt);
   }
-  static void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
-    auto p = *it;
-    it++;
-    if (it != ite)
-      moveIterateByBucketHelper(it, ite);
-    p->move(dt);
-  }
-  static void moveIterateByBucket() { // slower when occupancy percentage is low
-    for (auto slot = &ParticlesIndex::instance.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
-      if (!slot->empty()) {
-        moveIterateByBucketHelper(slot->begin(), slot->end());
-        //sz += slot->size();
-      }
-  }
+  //static void moveIterateByBucketHelper(ParticlesIndex::Slot::iterator it, const ParticlesIndex::Slot::iterator &ite) {
+  //  auto p = *it;
+  //  it++;
+  //  if (it != ite)
+  //    moveIterateByBucketHelper(it, ite);
+  //  p->move(dt, fnWallX1, fnWallX2, fnWallY1, fnWallY2, fnWallZ1, fnWallZ2);
+  //}
+  //static void moveIterateByBucket() { // slower when occupancy percentage is low
+  //  for (auto slot = &ParticlesIndex::instance.get()[0][0][0], slote = slot + ParticlesIndex::NSpaceSlots[0]*ParticlesIndex::NSpaceSlots[1]*ParticlesIndex::NSpaceSlots[2]; slot < slote; slot++)
+  //    if (!slot->empty()) {
+  //      moveIterateByBucketHelper(slot->begin(), slot->end());
+  //      //sz += slot->size();
+  //    }
+  //}
 }; // Evolver
 
 //
@@ -1116,17 +1152,6 @@ int mainGuarded(int argc, char *argv[]) {
   // parse arguments
   //
 
-#if DBG_TRACK_PARTICLES
-  auto splitToUInt64 = [](std::string strToSplit, char delimeter) {
-    std::stringstream ss(strToSplit);
-    std::string item;
-    std::vector<Count> split;
-    while (std::getline(ss, item, delimeter))
-       split.push_back(std::stoull(item));
-    return split;
-  };
-#endif
-
   cxxopts::Options options("Particle Simulator", "Simulator of the gas particles motion");
   options.add_options()
     ("d,distribution", "Velocity distribution used to generate particles, and to inject energy (maxwell,spike-50-150,uniform-area)", cxxopts::value<std::string>()->default_value("maxwell"))
@@ -1136,6 +1161,7 @@ int mainGuarded(int argc, char *argv[]) {
     ("c,cycles",       "How many cycles to perform (default is 4000)", cxxopts::value<Count>()->default_value("4000"))
     ("p,print",        "How frequently to print cycles (default is 1, which means print every cycle)", cxxopts::value<unsigned>()->default_value("1"))
     ("b,buckets",      "How frequently to print buckets (default is 0, which means print only in the end)", cxxopts::value<unsigned>()->default_value("0"))
+    ("T,temperature",  "Set temperature of the walls, ex. -X:271:+X:272", cxxopts::value<std::string>()->default_value(""))
 #if DBG_TRACK_PARTICLES
     ("t,track",        "Track particles: 1-based, colon-separated values", cxxopts::value<std::string>())
       // could use std::vector<unsigned> here to do '-t pno1 -t pno 2 ...', but maybe it's better (more compact) this way with colon-separated values
@@ -1152,10 +1178,25 @@ int mainGuarded(int argc, char *argv[]) {
   Count numCycles = result["cycles"].as<Count>();
   unsigned cyclePrintPeriod = result["print"].as<unsigned>();
   unsigned cycleWriteBuckets = result["buckets"].as<unsigned>();
+  auto optWallTemperatures = splitString<std::string>(result["temperature"].as<std::string>(), ':');
+  if (optWallTemperatures.size()%2 != 0)
+    throw exception(str(boost::format("wall temperature specifier is expected to consist of pairs, supplied '%1%' parameters") % optWallTemperatures.size()));
+  
+  Float optWallTempSigma[3][2] = {{0., 0.}, {0., 0.}, {0., 0.}};
+  for (unsigned i = 0, ie = optWallTemperatures.size(); i!=ie; i++) {
+    auto val = optWallTemperatures[i];
+    if (val.size() != 2 || (val[0]!='-' && val[0]!='+') || (val[1]!='X' && val[1]!='Y' && val[1]!='Z'))
+      throw exception(str(boost::format("wall temperature specifier is expected to have {sign}{Coord}, supplied '%1%'") % val));
+    switch (val[1]) {
+    case 'X': *(val[0]=='-' ? &optWallTempSigma[X-1][0] : &optWallTempSigma[X-1][1]) = maxwellSigma(convertType<std::string,Float>(optWallTemperatures[++i])); break;
+    case 'Y': *(val[0]=='-' ? &optWallTempSigma[Y-1][0] : &optWallTempSigma[Y-1][1]) = maxwellSigma(convertType<std::string,Float>(optWallTemperatures[++i])); break;
+    case 'Z': *(val[0]=='-' ? &optWallTempSigma[Z-1][0] : &optWallTempSigma[Z-1][1]) = maxwellSigma(convertType<std::string,Float>(optWallTemperatures[++i])); break;
+    }
+  }
 #if DBG_TRACK_PARTICLES
   std::vector<Count> optTrack;
   if (result.count("track") > 0)
-    optTrack = splitToUInt64(result["track"].as<std::string>(), ':');
+    optTrack = splitString<Count>(result["track"].as<std::string>(), ':');
   { // assign pno in particles
     unsigned pno = 1;
     for (auto &p : particles)
@@ -1196,7 +1237,7 @@ int mainGuarded(int argc, char *argv[]) {
     std::cout << "done unserializing from " << optRestartFile << " ..." << std::endl;
   } else {
     if (optDistribution == "maxwell") {
-      Float sigma = std::sqrt(PhysicsConsts::k*Teff/m);
+      Float sigma = maxwellSigma(Teff);
       generateParticles([sigma]() {
         return rg.maxwell3(sigma);
       });
@@ -1247,33 +1288,73 @@ int mainGuarded(int argc, char *argv[]) {
   if (1) {
     unsigned prevStatsNumCollisionsPP = 0;
     auto cpuCyclesBefore = xasm::getCpuCycles();
+    // fill wall collision functors
+    for (auto c : std::array<unsigned,3>({{0,1,2}})) {
+      if (optWallTempSigma[c][0]==0.)
+        wallFunctors[c][0] = &wallFunctorElastic;
+      else
+        wallFunctors[c][0] = [=](Float v) {
+          auto newV = rg.maxwell1Plus(optWallTempSigma[c][0]);
+          Float deltaEnergy = m*(newV*newV - v*v)/2;
+          {
+#if USE_PARALLELISM
+            std::unique_lock<std::mutex> l(statsLock);
+#endif
+            statsNumCollisionsPWtemp++;
+            statsWallDeltaEnergy += deltaEnergy;
+          }
+          return +newV;
+        };
+      if (optWallTempSigma[c][1]==0.)
+        wallFunctors[c][1] = &wallFunctorElastic;
+      else
+        wallFunctors[c][1] = [=](Float v) {
+          auto newV = rg.maxwell1Plus(optWallTempSigma[c][1]);
+          Float deltaEnergy = m*(newV*newV - v*v)/2;
+          {
+#if USE_PARALLELISM
+            std::unique_lock<std::mutex> l(statsLock);
+#endif
+            statsNumCollisionsPWtemp++;
+            statsWallDeltaEnergy += deltaEnergy;
+          }
+          return -newV;
+        };
+    }
+    // evolve
     Evolver::evolvePhysically(numCycles, [&prevStatsNumCollisionsPP](unsigned cycle) {
-      prevStatsNumCollisionsPP = statsNumCollisionsPP;
-    }, [numCycles,cyclePrintPeriod,cycleWriteBuckets,&optOutputFile,&prevStatsNumCollisionsPP,&cpuCyclesBefore,fnSaveOutput,fnSaveBuckets](unsigned cycle) {
-      // print tick and stats
-      if (cycle%cyclePrintPeriod == 0) {
-        Count cpuAtCycle = xasm::getCpuCycles();
-        AOut() << "tick#" << cycle << ":evolvePhysically:"
-               << " avgCpuCyclesPerTick=" << formatUInt64((cpuAtCycle - cpuCyclesBefore)/Count(cycle))
-               << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisionsPP) << ")"
-               << " statsNumCollisionsPW=" << statsNumCollisionsPW
-               << " statsNumBucketMoves=" << statsNumBucketMoves
-               << std::endl;
-      }
+        prevStatsNumCollisionsPP = statsNumCollisionsPP;
+      }, [numCycles,cyclePrintPeriod,cycleWriteBuckets,&optOutputFile,&prevStatsNumCollisionsPP,&cpuCyclesBefore,fnSaveOutput,fnSaveBuckets](unsigned cycle) {
+        // print tick and stats
+        if (cycle%cyclePrintPeriod == 0) {
+          Count cpuAtCycle = xasm::getCpuCycles();
+          AOut() << "tick#" << cycle << ":evolvePhysically:"
+                 << " avgCpuCyclesPerTick=" << formatUInt64((cpuAtCycle - cpuCyclesBefore)/Count(cycle))
+                 << " statsNumCollisionsPP=" << statsNumCollisionsPP << " (+" << (statsNumCollisionsPP-prevStatsNumCollisionsPP) << ")"
+                 << " statsNumCollisionsPW=" << statsNumCollisionsPW
+                 << (statsNumCollisionsPWtemp>0 ? str(boost::format(" statsNumCollisionsPWtemp=%1%") % statsNumCollisionsPWtemp) : "")
+                 << (statsWallDeltaEnergy!=0. ? str(boost::format(" statsWallDeltaEnergy=%1% (ΔT=%2%)")
+                                                                  % statsWallDeltaEnergy
+                                                                  % PhysicsFormulas::energyToTemperature(statsWallDeltaEnergy/Ncreate))
+                                              : "")
+                 << " statsNumBucketMoves=" << statsNumBucketMoves
+                 << std::endl;
+        }
 
-      // save output if requested
-      bool savedOnSignal = false;
-      if (signalOccurred && cycle != numCycles) {
-        fnSaveOutput(str(boost::format("%1%.cycle%2%.json") % optOutputFile % cycle));
-        fnSaveBuckets(cycle);
-        signalOccurred = false;
-        savedOnSignal = true;
-      }
+        // save output if requested
+        bool savedOnSignal = false;
+        if (signalOccurred && cycle != numCycles) {
+          fnSaveOutput(str(boost::format("%1%.cycle%2%.json") % optOutputFile % cycle));
+          fnSaveBuckets(cycle);
+          signalOccurred = false;
+          savedOnSignal = true;
+        }
 
-      // write buckets
-      if (!savedOnSignal && ((cycleWriteBuckets!=0 && cycle%cycleWriteBuckets==0) || cycle == numCycles))
-        fnSaveBuckets(cycle);
-    });
+        // write buckets
+        if (!savedOnSignal && ((cycleWriteBuckets!=0 && cycle%cycleWriteBuckets==0) || cycle == numCycles))
+          fnSaveBuckets(cycle);
+      }
+    );
   }
 
   //
